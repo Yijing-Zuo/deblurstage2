@@ -18,8 +18,8 @@
     "crop_mode": true
   },
   "image_max_pixels": 524288,
-  "max_new_tokens": 2048,
-  "max_seq_length": 8192,
+  "max_new_tokens": 32768,
+  "max_seq_length": 131072,
   "lora": {"rank": 16, "alpha": 32, "dropout": 0.05},
   "training": {"learning_rate": 0.0001, "epochs": 2, "gradient_accumulation_steps": 16}
 }

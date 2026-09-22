@@ -123,6 +123,23 @@ python restore.py --samples data/docsity/samples.jsonl \
 
 在 JupyterLab 文件浏览器打开 `runs/docsity_candidates.jsonl` 查看 OCR 候选，打开 `runs/docsity_32b.jsonl` 查看最终 `text`。检查记录的 `status`：`error` 或 `truncated` 需要处理，不能当作完整结果。
 
+### 提高长度预算后重新运行
+
+当前配置将单次输出上限从 2048 提高到 **32768 tokens**，输入加预留输出上限从 8192 提高到 **131072 tokens**。模型遇到结束标记会提前停止，并非每页都生成 32768 tokens。上限留作不结束或重复生成时的兜底；当前没有专门的死循环检测，触顶仍标记 `truncated`，不静默当作完整结果。
+
+如果旧 Qwen 进程仍在运行，在它所在的 Terminal 按一次 **Ctrl+C**，等 shell 提示符回来。然后执行下面的命令更新配置并正式重跑 Qwen；不用重新运行 OCR，也不用重新下载权重。
+
+```bash
+git pull --ff-only
+conda activate deblur-qwen
+export HF_HOME="$PWD/hf-cache"
+python restore.py --samples data/docsity/samples.jsonl \
+  --candidates runs/docsity_candidates.jsonl --model-size 32b \
+  --output runs/docsity_32b_long.jsonl --offline
+```
+
+新结果保存到 `runs/docsity_32b_long.jsonl`，全部处理结束后生成对应 `.md`。配置变化会使旧 Qwen 缓存失效，因此整批图片对都会按新预算重跑；旧结果文件保留。更长的实际输入或输出会增加耗时和显存，仍需检查最终状态及文字内容。
+
 如需 8B 对照，先下载它，再复用同一份 OCR 候选：
 
 ```bash
