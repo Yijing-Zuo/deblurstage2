@@ -1,0 +1,13 @@
+# Separate Linux/CUDA environment; do not combine with requirements-ocr.txt.
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+transformers==4.57.1
+tokenizers==0.22.1
+peft==0.17.1
+accelerate==1.7.0
+huggingface-hub==0.35.3
+safetensors==0.6.2
+numpy==1.26.4
+Pillow==11.3.0
+# Qwen uses the official processor and PyTorch SDPA; no flash-attn or VL utils needed.

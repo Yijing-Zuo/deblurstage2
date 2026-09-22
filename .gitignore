@@ -1,0 +1,45 @@
+# Local data, model weights, derived text and experiments
+/data/
+/runs/
+/outputs/
+/checkpoints/
+/models/
+/cache/
+/hf-cache/
+/logs/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+.hf_token
+credentials.json
+*.pem
+*.key
+.netrc
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+*.log
+slurm-*.out

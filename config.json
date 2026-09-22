@@ -1,0 +1,25 @@
+{
+  "model_size": "32b",
+  "models": {
+    "8b": {
+      "id": "Qwen/Qwen3-VL-8B-Instruct",
+      "revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
+    },
+    "32b": {
+      "id": "Qwen/Qwen3-VL-32B-Instruct",
+      "revision": "0cfaf48183f594c314753d30a4c4974bc75f3ccb"
+    }
+  },
+  "ocr": {
+    "id": "deepseek-ai/DeepSeek-OCR-2",
+    "revision": "aaa02f3811945a91062062994c5c4a3f4c0af2b0",
+    "base_size": 1024,
+    "image_size": 768,
+    "crop_mode": true
+  },
+  "image_max_pixels": 524288,
+  "max_new_tokens": 2048,
+  "max_seq_length": 8192,
+  "lora": {"rank": 16, "alpha": 32, "dropout": 0.05},
+  "training": {"learning_rate": 0.0001, "epochs": 2, "gradient_accumulation_steps": 16}
+}

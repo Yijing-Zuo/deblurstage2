@@ -1,0 +1,20 @@
+# Separate Linux/CUDA environment; Python 3.10 or 3.11.
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+transformers==4.46.3
+tokenizers==0.20.3
+huggingface-hub==0.35.3
+safetensors==0.6.2
+numpy==1.26.4
+Pillow==11.3.0
+einops==0.8.1
+easydict==1.13
+addict==2.4.0
+PyMuPDF==1.26.3
+img2pdf==0.6.1
+packaging==25.0
+ninja==1.11.1.4
+wheel==0.45.1
+setuptools==80.9.0
+# After installing the above: pip install flash-attn==2.7.3 --no-build-isolation

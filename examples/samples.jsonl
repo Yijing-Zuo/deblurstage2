@@ -1,0 +1,2 @@
+{"id":"example_train_6_001","document_id":"6","document_uid":"EXAMPLE_DOCUMENT_6_VERSION","page":"example_page_001","deblur_run":"EXAMPLE_SAME_FROZEN_RUN","split":"train","blur":"../data/example/blur_train.png","out":"../data/example/out_train.png"}
+{"id":"example_validation_8_001","document_id":"8","document_uid":"EXAMPLE_DOCUMENT_8_VERSION","page":"example_page_001","deblur_run":"EXAMPLE_SAME_FROZEN_RUN","split":"validation","blur":"../data/example/blur_validation.png","out":"../data/example/out_validation.png"}
