@@ -57,6 +57,37 @@ class RenderTests(unittest.TestCase):
                 self.assertIn(header, text)
             self.assertIn(self.record["lines"][0]["text"], text)
 
+    def test_multiple_samples_with_overflow_keep_comparison_page_mapping(self):
+        samples, records = [], []
+        for index in range(3):
+            sample_id = f"4_{index:03d}"
+            samples.append({**self.sample, "id": sample_id})
+            lines = [self.line(f"{sample_id}:first", 0, 40, f"Unique sample number {index}.")]
+            if index == 1:
+                lines.append(self.line(f"{sample_id}:long", 1, 70, "longword " * 300))
+            records.append({**self.record, "id": sample_id, "lines": lines})
+        write_jsonl(self.sample_path, samples)
+        write_jsonl(self.recovery_path, records)
+        clear_path = self.root / "clear.jsonl"
+        write_jsonl(clear_path, [{"id": s["id"], "clear": "clear.png"} for s in samples])
+        for columns, references in ((3, None), (4, clear_path)):
+            with self.subTest(columns=columns):
+                output = self.root / f"render-{columns}"
+                report = render(self.sample_path, self.recovery_path, output, clear_path=references)
+                self.assertTrue(report["samples"][1]["overflow_pages"])
+                with fitz.open(output / "recovered.pdf") as recovered, fitz.open(output / "comparison.pdf") as comparison:
+                    self.assertEqual(len(comparison), len(samples))
+                    self.assertGreater(len(recovered), len(samples))
+                    for index, item in enumerate(report["samples"]):
+                        primary = recovered[item["page"] - 1]
+                        x = 12 + (columns - 1) * (512 + 12)
+                        panel = fitz.Rect(x, 40, x + 512, 40 + 768)
+                        text = comparison[index].get_text(clip=panel)
+                        self.assertEqual(text, primary.get_text())
+                        self.assertIn(f"Unique sample number {index}.", text)
+                        with Image.open(output / item["images"][0]) as image:
+                            self.assertEqual(image.tobytes(), primary.get_pixmap(alpha=False).samples)
+
     def test_mismatched_clear_id_or_dimensions_is_rejected(self):
         path = self.root / "clear.jsonl"
         write_jsonl(path, [{"id": "14_001", "clear": "clear.png"}])

@@ -122,6 +122,8 @@ python render.py \
 - `runs/v2/render/comparison.pdf`：四列对照。
 - `runs/v2/render/report.json`：排版与覆盖诊断。
 
+若旧版导出时报 `source object number out of range`，更新代码后重复 render 命令即可。这是多页 PDF 合并问题；新版本先完成恢复 PDF，再重新打开制作对照图。无需重跑 OCR/Qwen、升级依赖或删除现有结果。
+
 Clear 不传给 OCR/Qwen。不上传参考包也能先看白底结果：删除 `--clear-references ...` 行即可，此时对照为 Output / Blur / Recovered 三列。
 
 ## 切换 8B、续跑和调参

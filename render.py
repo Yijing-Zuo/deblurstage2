@@ -231,7 +231,7 @@ def render(samples_path, recovery_path, output, clear_path=None, font_path=None,
     images = output / "recovered"
     images.mkdir(parents=True, exist_ok=True)
     reports, written_names = [], set()
-    with fitz.open() as recovered, fitz.open() as comparison:
+    with fitz.open() as recovered:
         for sample in samples:
             primary, report = render_record(recovered, records[sample["id"]], font, font_path, page_size)
             report["comparison_columns"] = 4 if sample["id"] in references else 3
@@ -244,9 +244,14 @@ def render(samples_path, recovery_path, output, clear_path=None, font_path=None,
                 written_names.add(target.name.casefold())
                 recovered[page_index].get_pixmap(alpha=False).save(target)
                 report["images"].append(target.relative_to(output).as_posix())
-            compare_page(comparison, recovered, primary, sample, references.get(sample["id"]), report, page_size)
             reports.append(report)
         recovered.save(output / "recovered.pdf", garbage=4, deflate=True)
+    # MuPDF caches source object IDs on first import: never grow that source PDF.
+    # Reopen the finished document before composing copyable comparison panels.
+    with fitz.open(output / "recovered.pdf") as recovered, fitz.open() as comparison:
+        for sample, report in zip(samples, reports):
+            compare_page(comparison, recovered, report["page"] - 1, sample,
+                         references.get(sample["id"]), report, page_size)
         comparison.save(output / "comparison.pdf", garbage=4, deflate=True)
     report = {"schema_version": 2, "page_size": list(page_size), "font": font_path or "Helvetica", "samples": reports}
     (output / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
