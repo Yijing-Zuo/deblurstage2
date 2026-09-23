@@ -78,6 +78,9 @@ def main():
         parser.error("--limit must be positive")
     config = load_config(args.config)
     settings = model_settings(config, args.model_size, args.model_path)
+    prompt_hash = fingerprint(make_prompt("", ""))
+    print(f"Prompt: PROMPT.md ({prompt_hash[:12]}); output budget: "
+          f"{config['max_new_tokens']} tokens", flush=True)
     source = settings.get("path", settings["id"])
     samples = load_samples(args.samples)[:args.limit]
     candidates = {row["id"]: row for row in read_jsonl(args.candidates)}
@@ -122,7 +125,8 @@ def main():
         with output.open("a", encoding="utf-8") as stream:
             for sample, prompt, key, hashes in pending:
                 row = {"id": sample["id"], "fingerprint": key, "source_hashes": hashes,
-                       "model": settings, "adapter_hash": adapter_hash}
+                       "model": settings, "adapter_hash": adapter_hash,
+                       "prompt_template_hash": prompt_hash}
                 batch = generated = tokens = None
                 try:
                     batch = encode(processor, image_messages([sample["blur"], sample["out"]], prompt), True)

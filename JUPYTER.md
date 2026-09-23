@@ -130,15 +130,36 @@ python restore.py --samples data/docsity/samples.jsonl \
 如果旧 Qwen 进程仍在运行，在它所在的 Terminal 按一次 **Ctrl+C**，等 shell 提示符回来。然后执行下面的命令更新配置并正式重跑 Qwen；不用重新运行 OCR，也不用重新下载权重。
 
 ```bash
-git pull --ff-only
-conda activate deblur-qwen
-export HF_HOME="$PWD/hf-cache"
+cd ~/deblurstage2 &&
+git -c safe.directory="$PWD" pull --ff-only &&
+conda activate deblur-qwen &&
+export HF_HOME="$PWD/hf-cache" &&
 python restore.py --samples data/docsity/samples.jsonl \
   --candidates runs/docsity_candidates.jsonl --model-size 32b \
   --output runs/docsity_32b_long.jsonl --offline
 ```
 
 新结果保存到 `runs/docsity_32b_long.jsonl`，全部处理结束后生成对应 `.md`。配置变化会使旧 Qwen 缓存失效，因此整批图片对都会按新预算重跑；旧结果文件保留。更长的实际输入或输出会增加耗时和显存，仍需检查最终状态及文字内容。
+
+### 用英文恢复提示词重新运行
+
+如果输出出现大段伪英文，继续加大 token 上限不能解决它。新版 [PROMPT.md](PROMPT.md) 明确英文先验，并要求模型核对双图及上下文，纠正 OCR 错误，保留可读文本，无法恢复的局部写成 `[unclear]`。`ok` 只说明生成正常结束，不说明内容已正确。设计参考见 [PROMPT_NOTES.md](PROMPT_NOTES.md)。
+
+旧进程已停止后，在 Terminal 执行以下整段。只重跑全量 Qwen，复用已有 OCR 和权重，不做训练。`safe.directory` 只信任本次命令的项目目录，处理此前的 ownership 报错；`&&` 确保前一步失败时不会继续启动模型。
+
+```bash
+cd ~/deblurstage2 &&
+git -c safe.directory="$PWD" pull --ff-only &&
+git -c safe.directory="$PWD" log -1 --oneline &&
+conda activate deblur-qwen &&
+export HF_HOME="$PWD/hf-cache" &&
+python -c "from common import make_prompt; p=make_prompt('', ''); assert p.startswith('Source language: English.'); print(p)" &&
+python restore.py --samples data/docsity/samples.jsonl \
+  --candidates runs/docsity_candidates.jsonl --model-size 32b \
+  --output runs/docsity_32b_english.jsonl --offline
+```
+
+启动前会显示实际提示词，随后程序打印模板指纹与 32768 tokens 输出预算。新结果写到 `runs/docsity_32b_english.jsonl`，整批结束后另生成同名 `.md`；旧结果保留。今后可以直接编辑 `PROMPT.md` 再重启 Qwen，改动会使旧 Qwen 缓存失效。提示词只能利用现有图像线索和语言先验，不能保证恢复严重模糊中已丢失的信息。
 
 如需 8B 对照，先下载它，再复用同一份 OCR 候选：
 
