@@ -7,6 +7,16 @@ import warnings
 from pathlib import Path
 
 
+def _json_scalar(value):
+    """Keep NumPy metadata numeric; arrays belong in NPZ, not JSONL."""
+    import numpy as np
+
+    for scalar, native in ((np.integer, int), (np.floating, float), (np.bool_, bool)):
+        if isinstance(value, scalar):
+            return native(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def read_jsonl(path):
     with Path(path).open(encoding="utf-8-sig") as source:
         return [json.loads(line) for line in source if line.strip()]
@@ -15,7 +25,8 @@ def read_jsonl(path):
 def write_jsonl(path, rows):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+    path.write_text("".join(json.dumps(r, ensure_ascii=False, allow_nan=False,
+                                    default=_json_scalar) + "\n" for r in rows),
                     encoding="utf-8")
 
 
@@ -26,7 +37,8 @@ def atomic_write_jsonl(path, rows):
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         for row in rows:
-            stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+            stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False,
+                                    default=_json_scalar) + "\n")
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
@@ -53,14 +65,16 @@ def read_journal(path):
 
 
 def append_record(stream, row):
-    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False,
+                            default=_json_scalar) + "\n")
     stream.flush()
     os.fsync(stream.fileno())
 
 
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                                     separators=(",", ":")).encode()).hexdigest()
+                                     separators=(",", ":"), allow_nan=False,
+                                     default=_json_scalar).encode()).hexdigest()
 
 
 def hash_file(path):

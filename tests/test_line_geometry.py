@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 from PIL import Image, ImageDraw
 
+from common import atomic_write_jsonl, read_journal
 from ocr_lines import (cache_valid, crop_geometry, merge_detections, process_page,
                        reading_order, split_multiline_boxes)
 from paddle_ctc import PaddleCTC, restrict_probabilities
@@ -52,6 +53,35 @@ class GeometryTests(unittest.TestCase):
         split = split_multiline_boxes(rows, [image, image])
         self.assertEqual(len(split), 4)
         self.assertTrue(split[0]["split_from_multiline"])
+
+    def test_multiline_page_can_be_saved_and_reused(self):
+        class FakeOCR:
+            def detect(self, path):
+                return [detection(box) for box in (
+                    [5, 10, 95, 42], [5, 60, 95, 68], [5, 80, 95, 88])]
+
+            def recognize(self, path):
+                yield {"name": "fake", "raw_text": "a"}, restrict_probabilities(
+                    [[0.1, 0.9]], ["blank", "a"], "a")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = Image.new("RGB", (100, 100), "white")
+            draw = ImageDraw.Draw(image)
+            for y in (12, 32):
+                draw.rectangle([10, y, 90, y + 7], fill="black")
+            for view in ("blur", "out"):
+                image.save(root / f"{view}.png")
+            sample = {"id": "split", "blur": str(root / "blur.png"), "out": str(root / "out.png")}
+            output = root / "evidence.jsonl"
+            page = {"id": "split", "schema_version": 2, "stage": "ocr",
+                    **process_page(sample, FakeOCR(), output, "b" * 64, {})}
+            self.assertTrue(page["lines"][0]["split_from_multiline"])
+            atomic_write_jsonl(output, [page])
+            restored = read_journal(output)[0]
+            self.assertEqual(restored["lines"][0]["detected_box"], [5, 12, 95, 20])
+            self.assertTrue(all(type(n) is int for n in restored["lines"][0]["detected_box"]))
+            self.assertTrue(cache_valid(restored, output))
 
     def test_page_evidence_hashes_and_shared_crop_survive_cache(self):
         class FakeOCR:

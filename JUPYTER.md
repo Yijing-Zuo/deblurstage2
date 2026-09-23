@@ -76,6 +76,8 @@ python ocr_lines.py \
 
 成功结束后进入下一步。`error` 会打印原因；修复后重复命令，完整未变的页面跳过。
 
+若旧版在保存时出现 `TypeError: Object of type int64 is not JSON serializable`，更新代码后重复上面的 OCR 命令即可，无需重装依赖。此次保存修复保留现有 OCR 缓存标识：已有完整页面校验通过后显示 `cached`，出错页重算。保留原 `evidence.jsonl` 与 `evidence.assets/`；不要把未完成的 `.tmp` 文件当成正式结果。
+
 ## 5. 正式运行 Qwen 32B 局部恢复
 
 ```bash
