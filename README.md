@@ -1,6 +1,8 @@
 # deblurstage2
 
-**在 JupyterLab 上开始：** 阅读 [JUPYTER.md](JUPYTER.md)，把本项目克隆到 `qaoa` 的同级目录，对现有 4/14 号的 157 张完整 Out 进行正式 OCR 与转写。
+**当前运行入口：** [LOCAL.md](LOCAL.md)。对现有 4/14 号的 157 对 Blur/Out 做局部读图，复用已安装的 Qwen 环境和模型缓存，不附 DeepSeek 文字候选。可切换 8B/32B，不训练、不安装新依赖。
+
+项目放在 `qaoa` 的同级目录。[JUPYTER.md](JUPYTER.md) 保留初次部署记录；下文 `ocr.py` → `restore.py` 的双阶段说明属于旧管线，已有环境的本轮运行直接按 LOCAL.md 操作。
 
 ## 模型权重怎样使用
 
@@ -21,13 +23,14 @@
 ```text
 冻结的 deblur：Blur → Out
                       ↓
-Blur、Out 分别进入冻结 DeepSeek-OCR2 → 两份文字候选
-        两张图 + 两份候选 → 冻结 Qwen3-VL → 恢复文字
+Blur / Out → 同坐标局部区域 + 邻近上下文
+           → 冻结 Qwen3-VL 独立读图
+           → 按位置拼接文字
 ```
 
-输出是文字；这里没有重训 deblur、修改其 Out 像素或微调 DeepSeek-OCR2。当前直接使用现有结果进行正式 OCR 与转写，不要求其他训练文档的 Out。
+输出是文字；这里没有重训 deblur 或微调 DeepSeek-OCR2，也不要求其他训练文档的 Out。局部裁剪、显示放大与标记仅供模型读图，不覆盖原始图片。识别质量尚未在服务器 GPU 上验证。
 
-主要入口为 `prepare.py`、`ocr.py`、`restore.py`、`train.py`，共享逻辑和参数放在 `common.py`、`config.json`。训练直接复用 Hugging Face Trainer 与 PEFT，不复制整套上游训练仓库。输入数据、识别结果和权重不提交到 Git。
+当前入口为 `restore_local.py`；旧 `prepare.py`、`ocr.py`、`restore.py`、`train.py` 继续保留。共享逻辑和参数放在 `common.py`、`config.json`。输入数据、识别结果和权重不提交到 Git。
 
 ## 服务器准备
 

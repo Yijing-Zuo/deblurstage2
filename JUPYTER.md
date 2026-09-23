@@ -1,5 +1,9 @@
 # JupyterLab：在 qaoa 旁运行 deblurstage2
 
+**已有环境与权重的当前运行：请直接使用 [LOCAL.md](LOCAL.md) 的完整命令。** 新入口 `restore_local.py` 对全部 157 对 Blur/Out 做局部读图，不传 DeepSeek 候选；复用现有 `deblur-qwen`、`hf-cache`，无需重新安装、下载模型或训练。
+
+下面保留最初的双阶段部署与历史操作记录，本轮不需要重做这些步骤。
+
 在 JupyterLab 的 **Terminal** 中执行下面的 Bash 命令，直接处理现有 4/14 号的全部 157 张 Out。无需先建 Notebook，也不要在已有 qaoa 环境中安装依赖。截图显示已分配 H200 NVL、约 143771 MiB 显存；实际可用显存仍以运行时为准。目前没有与服务器连接，下面是供你在服务器执行的命令。
 
 ## 1. 确认目录，再下载代码
