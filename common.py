@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import warnings
 from pathlib import Path
 
 
@@ -15,6 +17,45 @@ def write_jsonl(path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
                     encoding="utf-8")
+
+
+def atomic_write_jsonl(path, rows):
+    """Replace a stage snapshot only after every record has been written."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        for row in rows:
+            stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+def read_journal(path):
+    """Recover complete records; tolerate only an interrupted final write."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    lines = path.read_bytes().splitlines(keepends=True)
+    rows = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line.decode("utf-8-sig")))
+        except (ValueError, UnicodeDecodeError):
+            if index == len(lines) - 1 and not line.endswith(b"\n"):
+                warnings.warn(f"Ignoring interrupted final record in {path}")
+                break
+            raise ValueError(f"Corrupt JSONL record {index + 1} in {path}") from None
+    return rows
+
+
+def append_record(stream, row):
+    stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
+    stream.flush()
+    os.fsync(stream.fileno())
 
 
 def fingerprint(value):

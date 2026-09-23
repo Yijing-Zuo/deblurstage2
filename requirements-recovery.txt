@@ -1,0 +1,2 @@
+# Additional CPU candidate search only; keep the existing Qwen environment.
+symspellpy==6.9.0

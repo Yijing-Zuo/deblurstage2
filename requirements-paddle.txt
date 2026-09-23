@@ -1,0 +1,9 @@
+# New, separate deblur-paddle environment. Install the official GPU wheel first:
+# python -m pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+# Direct PaddleX OCR-core avoids optional document/VLM/Transformers backends.
+paddlex[ocr-core]==3.7.0
+numpy==1.26.4
+Pillow==11.3.0
+opencv-contrib-python==4.10.0.84
+huggingface-hub==0.35.3
+PyYAML==6.0.2

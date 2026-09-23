@@ -1,5 +1,12 @@
 # Model environments
 
+**Current v2 deployment:** use [JUPYTER.md](JUPYTER.md). The existing server Qwen
+environment and 32B offline cache have now been exercised by the user. Keep them.
+Add a separate Paddle 3.2/cu126 + PaddleX OCR-core 3.7 environment, plus the small
+recovery/render dependencies in Qwen. CPU contract and PDF rendering checks have
+passed locally; the new Paddle model path has not been run on H200. The original
+DeepSeek setup notes below are retained for historical reproduction only.
+
 Local work has not installed packages, downloaded model weights, or used a GPU.
 These are proposed Linux environments for the A100/H200 host, not a tested GPU setup.
 Keep the existing deblur environment unchanged. Use separate OCR and Qwen virtual

@@ -1,5 +1,7 @@
 # 局部读图：复用现有 Qwen，正式处理全部 157 对
 
+**历史入口：当前字符证据方案请使用 [JUPYTER.md](JUPYTER.md)。以下仅供复现旧局部读图结果。**
+
 本入口直接读取配对的 Blur/Out 局部图，不读取 DeepSeek 文字候选。使用已有 `deblur-qwen` 环境、模型缓存和样本清单；无需重跑 OCR、安装新依赖或训练。旧 `restore.py` 仍保留用于比较。
 
 ## 在 JupyterLab Terminal 运行

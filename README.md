@@ -1,163 +1,86 @@
 # deblurstage2
 
-**当前运行入口：** [LOCAL.md](LOCAL.md)。对现有 4/14 号的 157 对 Blur/Out 做局部读图，复用已安装的 Qwen 环境和模型缓存，不附 DeepSeek 文字候选。可切换 8B/32B，不训练、不安装新依赖。
+从配准的 Blur/Out 恢复英文文字，输出 512×768 白底页面、可复制文字 PDF，以及同一样本的 Clear / Output / Blur / Recovered 四列对照。
 
-项目放在 `qaoa` 的同级目录。[JUPYTER.md](JUPYTER.md) 保留初次部署记录；下文 `ocr.py` → `restore.py` 的双阶段说明属于旧管线，已有环境的本轮运行直接按 LOCAL.md 操作。
-
-## 模型权重怎样使用
-
-这套程序在服务器上运行模型。先从 Hugging Face 下载固定版本的权重、配置和 tokenizer，保存在服务器共享缓存；之后 GPU 作业直接读取缓存。**它不调用 DeepSeek / Qwen 的收费推理 API，也不需要它们的 API key。** 已准备好完整缓存时，三个模型入口均支持 `--offline`；下载和 GPU 推理可以分开进行。
-
-2026-09-22 核对的官方 Hugging Face 元数据如下。三个仓库均为公开、非 gated，当前不需要先申请 Hugging Face 模型访问审批；登录可用于账户限额等需要。许可证均标注 Apache-2.0，使用与分发仍应遵守各仓库许可。ICRN 的账号、联网、存储和作业权限由本校规则决定，目前没有核实。
-
-|模型|用途|仅 safetensors 权重大小，十进制|
-|---|---|---:|
-|[DeepSeek-OCR-2](https://huggingface.co/deepseek-ai/DeepSeek-OCR-2)|分别读取 Blur 和 Out|约 6.8 GB|
-|[Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct)|快速基线 / 较低显存备选|约 17.5 GB|
-|[Qwen3-VL-32B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct)|默认模型，H200 主方案；独立 LoRA 底座|约 66.7 GB|
-
-上述数字不是显存峰值，也不是完整磁盘需求。环境、缓存、检查点和输出都需要额外空间。固定的 commit SHA 在 `config.json` 和 [NOTES_ENV.md](NOTES_ENV.md) 中；本地开发未下载权重、运行 GPU 推理或开始训练。
-
-## 做什么
+**当前入口：`ocr_lines.py` → `recover.py` → `render.py`。云端完整命令见 [JUPYTER.md](JUPYTER.md)。** 使用已有 H200、`deblur-qwen`、Qwen 32B 缓存和 157 对图片；新增独立 Paddle 环境。程序在服务器本地运行公开权重，不调用收费推理 API。
 
 ```text
-冻结的 deblur：Blur → Out
-                      ↓
-Blur / Out → 同坐标局部区域 + 邻近上下文
-           → 冻结 Qwen3-VL 独立读图
-           → 按位置拼接文字
+Blur + Out
+  → 双图行检测、共用裁剪、分栏阅读顺序
+  → PP-OCRv6 medium + v5 英文识别器：保存字符概率
+  → 英文字符约束、CTC 候选、字符组混淆与词典召回
+  → Qwen 局部选择 / 短词提议 → 缓存概率再评分
+  → 按行装配 → 白底 PNG / 可复制 PDF / 对照 PDF
 ```
 
-输出是文字；这里没有重训 deblur 或微调 DeepSeek-OCR2，也不要求其他训练文档的 Out。局部裁剪、显示放大与标记仅供模型读图，不覆盖原始图片。识别质量尚未在服务器 GPU 上验证。
+Qwen 可切换 8B/32B；默认复用已下载的 32B。它不再自由续写整页。允许保留 gibberish，允许提出原 OCR 中没有的新词；每次改动记录原读法、候选与各视觉来源的支持。正文限制为 A–Z/a–z、0–9、ASCII 标点与空格，行之间由程序换行。数字不作全局 `1→l`、`0→O` 替换。
 
-当前入口为 `restore_local.py`；旧 `prepare.py`、`ocr.py`、`restore.py`、`train.py` 继续保留。共享逻辑和参数放在 `common.py`、`config.json`。输入数据、识别结果和权重不提交到 Git。
+## 输入与输出
 
-## 服务器准备
+现有 `data/docsity/samples.jsonl` 直接使用，不重新上传、不重新跑 base deblur。每行包含：
 
-以下是用户后续在服务器执行的 Linux 命令，尚未在 ICRN 实机验证。目标为 **单 H200 141 GB + Qwen 32B**，优先文字效果；A100 80 GB 可作替代，但 32B 的显存余量更紧。先核对实际分配的 GPU、驱动、CUDA 编译工具、磁盘配额和网络方式。没有预设 ICRN 主机名、module、分区或调度命令。
+```json
+{"id":"4_004","document_id":"4","deblur_run":"docsity_20260915","split":"test","blur":"images/Blur_4_004.png","out":"images/Out_4_004.png"}
+```
 
-下面从 GitHub 克隆代码。数据通过实验室允许的文件传输方式另行搬运；全量数据包上传与运行步骤见 [JUPYTER.md](JUPYTER.md)。
+图片路径相对 manifest 所在目录，两图必须配准、尺寸一致。512×768 是已有区域尺寸，不保证等于原 PDF 全页。当前 4/14 共 157 对；0 号缺块未拼补混入。其他训练文档的 Out 不存在，运行不依赖它们。
+
+| 文件 | 内容 |
+| --- | --- |
+| `runs/v2/evidence.jsonl` | 行位置、阅读顺序、模型身份和缓存索引 |
+| `runs/v2/evidence.assets/` | 同坐标行裁剪，以及保留原概率的压缩 NPZ |
+| `runs/v2/recovery.lines.jsonl` | 每行候选、CTC 分数、Qwen 回复、选择及中断恢复日志 |
+| `runs/v2/recovery.jsonl` | 最终按页组织的文字和坐标 |
+| `runs/v2/render/recovered/*.png` | 512×768 白底文字页 |
+| `runs/v2/render/recovered.pdf` | 可选择和复制文字的 PDF |
+| `runs/v2/render/comparison.pdf` | 有 Clear 参考时四列；没有时为明确标注的三列 |
+| `runs/v2/render/report.json` | 排版、溢出、覆盖诊断和各页状态 |
+
+Clear 只通过 renderer 独立的 `--clear-references` 清单进入对照图，不进入 OCR、Qwen 或词候选。格式为 `{"id":"4_004","clear":"images/Clear_4_004.png"}`，路径相对该清单；必须和当前样本 ID、尺寸对应。不要输入旧 2 号的三列比较 PDF 代替当前 4/14 数据。
+
+`ok` 表示步骤完成且结构合法，**不表示识别正确**。`review` 保留有效文字，记录被拒绝的提议、可疑行几何或覆盖缺口。`error` 保留错误原因并在下次运行时重试。默认不把缺行/错误结果排版成完整成品；需要诊断图时才使用 `render.py --allow-incomplete`。
+
+字号根据行框自适应；文字确实放不下时不裁尾，而是标记位置并将全文放在额外白底页，详情写入 report。
+
+## 模型与环境
+
+- 检测：`PP-OCRv6_medium_det`。
+- 字符识别：`PP-OCRv6_medium_rec` 与 `en_PP-OCRv5_mobile_rec`。
+- 局部语言判断：原 `Qwen/Qwen3-VL-32B-Instruct`，可选 8B。
+- OCR 用 Paddle GPU 3.2.0 cu126 + `paddlex[ocr-core]==3.7.0` 静态接口；省去 PaddleOCR 包装层和可选 VLM 后端。
+- Qwen 沿用 Torch 2.6.0 cu124 / Transformers 4.57.1；只增加词典和 CPU 排版依赖。
+
+默认模型在 `config.json` 锁定 immutable revision。OCR 的 `--download-only` 只下载三套静态模型必要文件；`--offline` 只读缓存。OCR 和 Qwen 顺序执行，通过文件交接，两个框架不混装到同一环境。
+
+## 代码与可调设置
+
+| 文件 | 职责 |
+| --- | --- |
+| `ocr_lines.py` | 检测、行几何、共同裁剪与阶段缓存 |
+| `paddle_ctc.py` | 锁版本的 PaddleX 概率提取适配 |
+| `ctc.py` | 受限解码、完整 CTC 路径求和 |
+| `candidates.py` | 字符组编辑、词表召回、拆合词和区间装配 |
+| `recover.py` | 已有 Qwen 的局部候选选择与短提议 |
+| `render.py` | 字体排版、PNG/PDF 和同样本对照 |
+
+`config.json` 的 `v2` 段控制检测、字符范围、候选搜索、Qwen 图像与输出预算。`RECOVERY_PROMPT.md` 可直接编辑；`--lexicon` 可换成自备 `word count` 英文词典。允许保留词表外名称，不会把最高频近邻直接当答案。
+
+字符概率是识别器的视觉支持，不是恢复正确率；CTC 时间步也不是精确字母框。保持动态行宽，不强制压成 320 像素。几何使用共享轴对齐裁剪，保留原检测多边形，未实现任意旋转/复杂弯曲文本的自动校正。
+
+## 缓存与复核
+
+同一命令重新执行即可：OCR 复用完整且哈希匹配的页面，Qwen 复用完整的行，失败/变化部分重算。丢失或被修改的图像/NPZ 会拒绝恢复，先重跑 OCR 重建该页。不要让两个作业同时写同一输出路径。
+
+改 Qwen 提示或词典不重跑 OCR；只改排版不重跑模型。改变字符范围需要重新生成 OCR 证据。旧 DeepSeek 字符串和旧 Qwen JSONL 无法转为字符概率，不作为 v2 缓存。
+
+本地 CPU 检查：
 
 ```bash
-# 替换成有足够空间、GPU 节点也能访问的真实路径。
-export WORK_ROOT=/replace/with/server/workspace
-export HF_HOME="$WORK_ROOT/hf-cache"
-git clone https://github.com/Yijing-Zuo/deblurstage2.git "$WORK_ROOT/deblurstage2"
-cd "$WORK_ROOT/deblurstage2"
+python -m unittest discover -s tests -v
 ```
 
-保留原 deblur 环境；新建两个独立环境。DeepSeek 官方接口使用 Transformers 4.46.3，本实现的 Qwen 入口使用 4.57.1，不能把两份 requirements 合并安装。以下选 Python 3.11；环境文件亦允许 3.10。
+覆盖 CTC 与枚举路径对照、概率/字典、数字和字符限制、候选边界、分栏几何、文件完整性、中断日志、模拟模型的跨阶段合同，以及 PDF 文字和 PNG 一致性。未执行模型 smoke test；本地复核不等于在 H200 实测新模型，也不证明恢复效果已改善。
 
-```bash
-conda create -n deblur-ocr python=3.11 -y
-conda activate deblur-ocr
-python -m pip install -r requirements-ocr.txt
-python -m pip install flash-attn==2.7.3 --no-build-isolation
-python -m pip check
+`ocr.py`、`restore.py`、`restore_local.py` 保留作历史复现，已退出默认流程。`train.py` 的旧 LoRA 数据设计需要训练 Out，不适用于当前材料。未来 OCR 微调应使用已有训练文档的 Blur/可靠行转写和上游训练循环，保持 0/4/14 留出；当前三步运行都是推理。
 
-conda create -n deblur-qwen python=3.11 -y
-conda activate deblur-qwen
-python -m pip install -r requirements-qwen.txt
-python -m pip check
-```
-
-两个环境均固定 Torch 2.6.0 + CUDA 12.4 wheel，但 Transformers 版本不同。DeepSeek 需要 FlashAttention，其源码安装可能需要匹配的 CUDA 12.4 toolkit / 编译器；`nvidia-smi` 显示的驱动能力不等于已安装 toolkit。Qwen 入口使用 PyTorch SDPA，不需要额外安装 FlashAttention。若服务器环境不兼容，先调整并记录版本，不在原 deblur 环境反复覆盖依赖。
-
-安装与下载放在学校允许的联网节点进行；GPU 推理和训练须在分配到的 GPU 作业中进行，不在登录节点加载模型。进入每个 GPU 作业时重新设置相同的 `HF_HOME`，激活相应环境并切换到仓库目录。
-
-### 下载一次，以后离线读取
-
-下面只下载文件，不启动推理。主方案准备 OCR2 和 32B；8B 是可选基线。
-
-```bash
-conda activate deblur-ocr
-hf download deepseek-ai/DeepSeek-OCR-2 \
-  --revision aaa02f3811945a91062062994c5c4a3f4c0af2b0
-hf download Qwen/Qwen3-VL-32B-Instruct \
-  --revision 0cfaf48183f594c314753d30a4c4974bc75f3ccb
-
-# 可选：8B 必须使用自己的权重和 adapter。
-hf download Qwen/Qwen3-VL-8B-Instruct \
-  --revision 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
-```
-
-也可以把完整 snapshot 放到自选目录，再向对应脚本传 `--model-path /absolute/path/to/snapshot --offline`。不要把仅有 safetensors 的目录当成完整模型，也不要将不同 revision 的配置、代码和权重混放。DeepSeek 使用仓库自带模型代码，加载时固定 revision；使用本地目录时应保留对应 snapshot 原貌。
-
-## 阶段 I：现有 Out → 文字
-
-### 1. 对齐输入
-
-当前 4/14 有 157 张拼接 Out。将下面原工作区的目录结构复制到服务器数据目录：
-
-```text
-outputs/results_Out_merged_512x768_20260915/*.png
-outputs/results_original_Blur_GT_fullpages/verified_4_14.json
-outputs/results_original_Blur_GT_fullpages/Blur/*.webp
-```
-
-GT 不参与这一步推理。`verified_4_14.json` 提供实际 ROI；不能凭文件名把 Out 和整页 Blur 直接配对，也不能认为 512×768 一定是完整段落。以下直接导入全量 157 张。
-
-```bash
-conda activate deblur-ocr
-export DEBLUR_DATA=/replace/with/copied/deblur/data-root
-python prepare.py \
-  --pairs "$DEBLUR_DATA/outputs/results_original_Blur_GT_fullpages/verified_4_14.json" \
-  --out-dir "$DEBLUR_DATA/outputs/results_Out_merged_512x768_20260915" \
-  --output data/samples.jsonl
-```
-
-这个入口将裁剪后的 Blur 与对应 Out 一起写入 `data/images/`，生成相对路径索引。也可以先在本地导入，再将整个 `data/` 传到服务器，跳过服务器导入步骤。
-
-自备样本用 `--manifest` 导入。每行需要 `id`、`document_id`、`deblur_run`、`split`、`blur`、`out`；建议同时提供可区分文档版本的 `document_uid`。图片相对路径以输入 JSONL 所在目录为基准。已对齐图片直接配对；需要裁剪时提供 `blur_box` / `out_box`，坐标为左上角原点的 `[x0,y0,x1,y1]`、右下边界不包含在内。
-
-```bash
-python prepare.py --manifest data/input_pairs.jsonl --output data/samples.jsonl
-```
-
-`examples/samples.jsonl` 只展示字段，不附带实际图像。不要向 OCR 输入含 Clear 的三列比较 PDF、图像拼表或原 GT；这些包含答案。0 号缺块数据只能按实际可见区域配对，不能白填后当完整段落。旧 2 号属于另一批 deblur run，不用于这套当前 run 的训练或替代测试输入。
-
-### 2. 缓存两份 OCR 候选
-
-在分配到的 GPU 上：
-
-```bash
-conda activate deblur-ocr
-python ocr.py --samples data/samples.jsonl \
-  --output runs/candidates.jsonl --offline
-```
-
-DeepSeek 的公开 `infer` 接口一次处理一张图，脚本分别识别 Blur 和 Out；不是把两图拼成一张。匹配输入哈希和设置的成功记录会复用，失败记录会重试。候选存为 JSONL，后续训练和推理使用同一份格式。
-
-### 3. Qwen 合并图像证据与候选
-
-先结束 OCR 进程、释放其显存，再切换环境：
-
-```bash
-conda activate deblur-qwen
-python restore.py --samples data/samples.jsonl \
-  --candidates runs/candidates.jsonl --model-size 32b \
-  --output runs/restored_32b.jsonl --offline
-
-# 可选基线：复用 OCR 缓存，另外加载 8B。
-python restore.py --samples data/samples.jsonl \
-  --candidates runs/candidates.jsonl --model-size 8b \
-  --output runs/restored_8b.jsonl --offline
-```
-
-Qwen 同时接收两张图和两份 OCR 候选。默认不使用 adapter；省略 `--model-size` 时使用配置中的 **32B**。直接处理全量输入，检查输出的 `status` 与 `text`：`error` 或 `truncated` 不能算作完整成功。改动图片、模型或相关配置会使原结果不能直接复用。显存峰值取决于双图 token、序列长度和输出预算，当前尚未在 H200 实测。
-
-提示词在 [PROMPT.md](PROMPT.md)，8B/32B 和可选训练共用同一个模板。它明确源文档为英文，要求结合双图字形和区域内上下文修正 OCR 的错字、漏字、断词，允许修正多字符错误；Out 中清晰的伪字不是真值。已有可读内容、专名、数字和公式应保留，无法恢复的局部标为 `[unclear]`，不能靠主题补写文章。设计依据及适用边界见 [PROMPT_NOTES.md](PROMPT_NOTES.md)。
-
-修改 `PROMPT.md` 后重启 `restore.py` 即可生效，不需要训练、重新下载权重或重新运行 OCR。程序启动时打印提示词指纹，JSONL 中的 `prompt_template_hash` 记录所用模板；完整提示词已参与缓存判断，因此旧 Qwen 结果不会因 `ok` 而跳过新提示词。`ok` **仅表示生成正常结束，不代表文字正确或可读**；`[unclear]` 也只是模型的标记，不是经过校准的置信度。新提示词尚未在服务器验证效果。
-
-当前单次输出预算为 **32768 tokens**，输入加预留输出预算为 **131072 tokens**；这是上限，遇到结束标记会提前停止。它们已从初版的 2048 / 8192 调高，为当前文档区域留出更大余量。最终长度上限仍保留，不能保证任意长输出都不会截断，也不会自动判断重复是否属于死循环。已有 OCR 候选可直接复用；更改配置后，旧 Qwen 成功结果的缓存也会失效。旧运行的停止、更新与重启步骤见 [JUPYTER.md](JUPYTER.md#提高长度预算后重新运行)。
-
-## 当前不执行 LoRA 微调
-
-其他训练文档的 Out 不存在，也不会提供。当前正式方案直接使用冻结的 DeepSeek-OCR2 和预训练 Qwen3-VL，完成现有 Out 的 OCR 与文字转写，不需要训练数据。
-
-`train.py` 与训练导出功能保留为可选工具，但其原始设计依赖真实训练 Out，**不适用于当前可用材料，也不是运行系统的前置步骤**。不再要求收集其他文档的 Out。若以后仍需微调，应基于实际可用的 Blur、清晰文档或已核对文字重新设计训练数据，再实施。
-
-当前本地检查仅使用 CPU：`python -m unittest discover -s tests -v` 的 19 项检查、四入口的 `--help` / 语法检查，以及现有 4/14 号全部 157 对的 Blur 裁剪与 Out 导入已通过。模型加载、实际 HF processor / adapter 集成、GPU 显存和文字恢复效果仍待服务器验证。
-
-`.gitignore` 排除 `data/`、`runs/`、`models/`、缓存、检查点和凭据。推送前仍需检查 `git status`；本地开发和文档准备不会自动提交或推送。
+设计与限制见 [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md)。Git 不包含真实文档图片、模型、运行结果或凭据。

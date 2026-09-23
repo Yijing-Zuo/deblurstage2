@@ -1,190 +1,142 @@
-# JupyterLab：在 qaoa 旁运行 deblurstage2
+# JupyterLab：更新到字符证据恢复架构
 
-**已有环境与权重的当前运行：请直接使用 [LOCAL.md](LOCAL.md) 的完整命令。** 新入口 `restore_local.py` 对全部 157 对 Blur/Out 做局部读图，不传 DeepSeek 候选；复用现有 `deblur-qwen`、`hf-cache`，无需重新安装、下载模型或训练。
+在现有 JupyterLab **Terminal** 执行 Bash 命令。继续使用 `~/deblurstage2`、现有 157 对图片、`deblur-qwen` 和 `hf-cache`。不重建 Qwen、不重下同一份 32B、不需要其他训练 Out。以下直接运行完整实验，不包含模型 smoke test。
 
-下面保留最初的双阶段部署与历史操作记录，本轮不需要重做这些步骤。
+先停止仍在运行的旧 `restore.py` / `restore_local.py`：在其终端按 Ctrl+C，等 shell 提示符返回。
 
-在 JupyterLab 的 **Terminal** 中执行下面的 Bash 命令，直接处理现有 4/14 号的全部 157 张 Out。无需先建 Notebook，也不要在已有 qaoa 环境中安装依赖。截图显示已分配 H200 NVL、约 143771 MiB 显存；实际可用显存仍以运行时为准。目前没有与服务器连接，下面是供你在服务器执行的命令。
-
-## 1. 确认目录，再下载代码
-
-截图的终端位于 `~`，但左侧文件浏览器的 `/` 不代表 Linux 系统根目录。先确认终端当前目录确实包含 qaoa：
-
-```bash
-pwd
-ls -d qaoa
-```
-
-若第二条显示 `qaoa`，在这个目录执行：
-
-```bash
-git clone https://github.com/Yijing-Zuo/deblurstage2.git
-cd deblurstage2
-export HF_HOME="$PWD/hf-cache"
-```
-
-结果为同级的 `qaoa/` 和 `deblurstage2/`。若找不到 qaoa，先进入它的真实父目录再 clone，不要直接 `cd /`。如果已经 clone，进入已有 `deblurstage2` 后使用 `git pull --ff-only`，不重复克隆。
-
-GitHub 只含代码、配置与文档，**不包含真实图片、权重或训练输出**。
-
-## 2. 检查环境与空间
-
-```bash
-command -v conda
-command -v python
-command -v nvcc
-python --version
-nvcc --version
-nvidia-smi
-df -h .
-```
-
-`nvcc` 不存在时，该条命令报错不影响此前检查。OCR2 + 32B 的权重文件合计约 74 GB，完整缓存、两个环境、训练检查点还需额外空间；若学校有磁盘配额，也要单独核对配额。8B 是另加约 17.5 GB 的可选下载。
-
-截图中 `nvidia-smi` 的 CUDA 12.8 表示驱动支持的 CUDA 版本，**不证明已安装 CUDA 编译工具**。本项目使用 Torch 的 CUDA 12.4 wheel，无需因为截图显示 12.8 就修改 GPU 驱动。OCR 的 FlashAttention 源码安装还需要兼容的编译器与 CUDA toolkit，建议匹配 CUDA 12.4；Qwen 使用 SDPA，不需要安装 FlashAttention。
-
-如果没有 conda，先使用学校提供的环境管理方式；不要猜测 conda 安装路径。如果 conda 存在但 `conda activate` 提示 shell 未初始化，可在当前终端执行：
-
-```bash
-source "$(conda info --base)/etc/profile.d/conda.sh"
-```
-
-## 3. 建两个独立环境
-
-```bash
-conda create -n deblur-ocr python=3.11 -y
-conda activate deblur-ocr
-python -m pip install -r requirements-ocr.txt
-```
-
-**先确认 `nvcc --version` 及 CUDA toolkit 兼容，再执行下一条。** 如果缺少 nvcc 或版本不匹配，先通过学校提供的 toolkit/module 或管理员解决，不要强行安装或反复覆盖现有环境。
-
-```bash
-python -m pip install flash-attn==2.7.3 --no-build-isolation
-python -m pip check
-python -c "import torch, flash_attn; print(torch.__version__, torch.version.cuda); print(torch.cuda.get_device_name(0))"
-
-conda create -n deblur-qwen python=3.11 -y
-conda activate deblur-qwen
-python -m pip install -r requirements-qwen.txt
-python -m pip check
-python -c "import torch; print(torch.__version__, torch.version.cuda); print(torch.cuda.get_device_name(0))"
-```
-
-不要合并两份 requirements：DeepSeek 与 Qwen 使用不同的 Transformers 版本。这些安装命令会下载依赖，但不会启动模型推理或训练。
-
-## 4. 下载固定版本的模型
-
-主方案只需 OCR2 和 32B。当前两个仓库均公开、无需申请模型访问权限；不需要 DeepSeek/Qwen 的付费 API key。下载需要服务器有网络，文件会缓存到 `hf-cache/`，首次下载后可重复使用。
-
-```bash
-conda activate deblur-ocr
-export HF_HOME="$PWD/hf-cache"
-hf download deepseek-ai/DeepSeek-OCR-2 \
-  --revision aaa02f3811945a91062062994c5c4a3f4c0af2b0
-hf download Qwen/Qwen3-VL-32B-Instruct \
-  --revision 0cfaf48183f594c314753d30a4c4974bc75f3ccb
-```
-
-这些版本与 `config.json` 一致。若 GPU 节点不能联网，可以在允许联网的节点下载到两边都能访问的磁盘；之后每个终端都设置同一个 `HF_HOME`。`hf-cache/` 已被 Git 忽略。
-
-## 5. 上传完整数据包
-
-将另行提供的 **`deblurstage2-docsity.zip`** 通过 JupyterLab 左侧上传按钮传到 `deblurstage2/`。它包含 4/14 号全部 157 对已对齐的 Blur/Out 和相对路径索引，不包含 Clear/GT。0 号存在缺块，不拼补成完整图混入这批数据。解压：
-
-```bash
-mkdir -p data
-unzip deblurstage2-docsity.zip -d data
-ls data/docsity/samples.jsonl data/docsity/images/
-```
-
-应得到：
-
-```text
-deblurstage2/
-  data/docsity/samples.jsonl
-  data/docsity/images/Blur_4_004.png
-  data/docsity/images/Out_4_004.png
-  data/docsity/images/...
-```
-
-这份完整数据已完成坐标对齐，无需再运行 prepare。将来加入新数据时，按 [README 的输入准备步骤](README.md#阶段-i现有-out--文字) 导入；不要把含答案的三列比较 PDF 输入模型。
-
-## 6. 顺序运行 OCR 和 32B
-
-下面直接对全部 157 对图片进行正式 OCR 和文字转写，不设置样本数限制。两个程序顺序运行，OCR 进程结束后再启动 Qwen，以释放显存。这一步运行模型推理，不更新权重。
-
-```bash
-conda activate deblur-ocr
-python ocr.py --samples data/docsity/samples.jsonl \
-  --output runs/docsity_candidates.jsonl --offline
-
-conda activate deblur-qwen
-python restore.py --samples data/docsity/samples.jsonl \
-  --candidates runs/docsity_candidates.jsonl --model-size 32b \
-  --output runs/docsity_32b.jsonl --offline
-```
-
-在 JupyterLab 文件浏览器打开 `runs/docsity_candidates.jsonl` 查看 OCR 候选，打开 `runs/docsity_32b.jsonl` 查看最终 `text`。检查记录的 `status`：`error` 或 `truncated` 需要处理，不能当作完整结果。
-
-### 提高长度预算后重新运行
-
-当前配置将单次输出上限从 2048 提高到 **32768 tokens**，输入加预留输出上限从 8192 提高到 **131072 tokens**。模型遇到结束标记会提前停止，并非每页都生成 32768 tokens。上限留作不结束或重复生成时的兜底；当前没有专门的死循环检测，触顶仍标记 `truncated`，不静默当作完整结果。
-
-如果旧 Qwen 进程仍在运行，在它所在的 Terminal 按一次 **Ctrl+C**，等 shell 提示符回来。然后执行下面的命令更新配置并正式重跑 Qwen；不用重新运行 OCR，也不用重新下载权重。
+## 1. 更新代码
 
 ```bash
 cd ~/deblurstage2 &&
 git -c safe.directory="$PWD" pull --ff-only &&
-conda activate deblur-qwen &&
-export HF_HOME="$PWD/hf-cache" &&
-python restore.py --samples data/docsity/samples.jsonl \
-  --candidates runs/docsity_candidates.jsonl --model-size 32b \
-  --output runs/docsity_32b_long.jsonl --offline
+git -c safe.directory="$PWD" log -1 --oneline
 ```
 
-新结果保存到 `runs/docsity_32b_long.jsonl`，全部处理结束后生成对应 `.md`。配置变化会使旧 Qwen 缓存失效，因此整批图片对都会按新预算重跑；旧结果文件保留。更长的实际输入或输出会增加耗时和显存，仍需检查最终状态及文字内容。
+`safe.directory` 只信任当前命令使用的项目，处理此前 ownership 报错。更新报错时不要继续用旧代码运行。已有本地修改时不要 `reset --hard` 覆盖；Git 会指出冲突文件。
 
-### 用英文恢复提示词重新运行
-
-如果输出出现大段伪英文，继续加大 token 上限不能解决它。新版 [PROMPT.md](PROMPT.md) 明确英文先验，并要求模型核对双图及上下文，纠正 OCR 错误，保留可读文本，无法恢复的局部写成 `[unclear]`。`ok` 只说明生成正常结束，不说明内容已正确。设计参考见 [PROMPT_NOTES.md](PROMPT_NOTES.md)。
-
-旧进程已停止后，在 Terminal 执行以下整段。只重跑全量 Qwen，复用已有 OCR 和权重，不做训练。`safe.directory` 只信任本次命令的项目目录，处理此前的 ownership 报错；`&&` 确保前一步失败时不会继续启动模型。
+每个新 Terminal 设置同一个模型缓存路径：
 
 ```bash
-cd ~/deblurstage2 &&
-git -c safe.directory="$PWD" pull --ff-only &&
-git -c safe.directory="$PWD" log -1 --oneline &&
-conda activate deblur-qwen &&
-export HF_HOME="$PWD/hf-cache" &&
-python -c "from common import make_prompt; p=make_prompt('', ''); assert p.startswith('Source language: English.'); print(p)" &&
-python restore.py --samples data/docsity/samples.jsonl \
-  --candidates runs/docsity_candidates.jsonl --model-size 32b \
-  --output runs/docsity_32b_english.jsonl --offline
+cd ~/deblurstage2
+export HF_HOME="$PWD/hf-cache"
 ```
 
-启动前会显示实际提示词，随后程序打印模板指纹与 32768 tokens 输出预算。新结果写到 `runs/docsity_32b_english.jsonl`，整批结束后另生成同名 `.md`；旧结果保留。今后可以直接编辑 `PROMPT.md` 再重启 Qwen，改动会使旧 Qwen 缓存失效。提示词只能利用现有图像线索和语言先验，不能保证恢复严重模糊中已丢失的信息。
+若 `conda activate` 未初始化，先执行 `source "$(conda info --base)/etc/profile.d/conda.sh"`。
 
-如需 8B 对照，先下载它，再复用同一份 OCR 候选：
+## 2. 新建专用 OCR 环境并下载小模型
+
+`deblur-paddle` 只创建一次；已创建时从激活开始。
 
 ```bash
+conda create -n deblur-paddle python=3.11 -y &&
+conda activate deblur-paddle &&
+python -m pip install paddlepaddle-gpu==3.2.0 \
+  -i https://www.paddlepaddle.org.cn/packages/stable/cu126/ &&
+python -m pip install -r requirements-paddle.txt &&
+python -m pip check &&
+python ocr_lines.py --download-only
+```
+
+通过 `paddlex[ocr-core]==3.7.0` 直接调用官方检测/识别器，不安装 PaddleOCR-VL、TensorRT 或新 Transformers。三套模型按固定 SHA 下载至 HF 缓存；`--download-only` 不加载 GPU。
+
+截图驱动 570.211.01 满足官方 cu126 wheel 的驱动下限。无需编译 FlashAttention。已核查官方接口与版本声明，但未在本地进行 H200 真实模型加载。
+
+## 3. 给现有 Qwen 环境补小依赖
+
+```bash
+conda activate deblur-qwen &&
+python -m pip install -c requirements-qwen.txt \
+  -r requirements-recovery.txt -r requirements-render.txt &&
+python -m pip check
+```
+
+约束文件保留原 Torch、Transformers、NumPy 等版本；新增 SymSpell 词典和 PyMuPDF 排版。不要升级 Transformers 或重装旧 DeepSeek 环境。以下三步可离线运行。
+
+## 4. 正式运行全部 157 对图的 OCR
+
+```bash
+conda activate deblur-paddle &&
+python ocr_lines.py \
+  --samples data/docsity/samples.jsonl \
+  --output runs/v2/evidence.jsonl \
+  --offline
+```
+
+分别检测 Blur/Out，建立共用行裁剪，每行保存两个识别器 × 两种图像的字符分布。字符范围为英文大小写、数字、标点与空格。裁剪和 NPZ 在 `runs/v2/evidence.assets/`，不要只移动 JSONL 丢掉 assets。
+
+成功结束后进入下一步。`error` 会打印原因；修复后重复命令，完整未变的页面跳过。
+
+## 5. 正式运行 Qwen 32B 局部恢复
+
+```bash
+conda activate deblur-qwen &&
+python recover.py \
+  --samples data/docsity/samples.jsonl \
+  --evidence runs/v2/evidence.jsonl \
+  --model-size 32b \
+  --output runs/v2/recovery.jsonl \
+  --offline
+```
+
+复用现有权重，不做训练。Qwen 处理真实行中的局部分歧，可提出短词，再由字符概率评分。32768-token 输出预算继续保留，并检测重复循环；有限预算仍存在，触顶不会静默当完整结果。
+
+进度形如 `[123/4800] 4_004:l0012: ok`；行数由实际检测确定，此处只是格式示例。`ok` 表示结构有效，不表示文字正确；`review` 保留结果并记录异常；`error` 使程序结束时返回非零退出码。重复命令重试失败行。
+
+查看 `recovery.jsonl` 的 `text`，详细候选在 `recovery.lines.jsonl`。页面文件随运行更新，含 `pending` 时尚未完成。
+
+## 6. 导出白底页面和四列 PDF
+
+为了得到 **Clear / Output / Blur / Recovered** 四列，将另行提供的 `deblurstage2-clear-references.zip` 上传到项目目录，首次解压：
+
+```bash
+unzip -n deblurstage2-clear-references.zip -d data
+```
+
+包内是当前 157 个匹配样本的 512×768 Clear 裁剪与独立清单，仅供 renderer 使用。然后运行：
+
+```bash
+conda activate deblur-qwen &&
+python render.py \
+  --samples data/docsity/samples.jsonl \
+  --recovery runs/v2/recovery.jsonl \
+  --clear-references data/docsity_references/clear.jsonl \
+  --output runs/v2/render
+```
+
+只用 CPU，生成：
+
+- `runs/v2/render/recovered/*.png`：512×768 白底文字页。
+- `runs/v2/render/recovered.pdf`：可复制文字的 PDF。
+- `runs/v2/render/comparison.pdf`：四列对照。
+- `runs/v2/render/report.json`：排版与覆盖诊断。
+
+Clear 不传给 OCR/Qwen。不上传参考包也能先看白底结果：删除 `--clear-references ...` 行即可，此时对照为 Output / Blur / Recovered 三列。
+
+## 切换 8B、续跑和调参
+
+8B 尚未缓存时联网下载一次：
+
+```bash
+conda activate deblur-qwen
 hf download Qwen/Qwen3-VL-8B-Instruct \
   --revision 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
-python restore.py --samples data/docsity/samples.jsonl \
-  --candidates runs/docsity_candidates.jsonl --model-size 8b \
-  --output runs/docsity_8b.jsonl --offline
 ```
 
-新开终端后，重新进入项目并恢复缓存变量与对应环境，例如：
+复用 OCR，另存 8B 结果：
 
 ```bash
-cd /实际的qaoa父目录/deblurstage2
-export HF_HOME="$PWD/hf-cache"
-conda activate deblur-qwen
+python recover.py \
+  --samples data/docsity/samples.jsonl \
+  --evidence runs/v2/evidence.jsonl \
+  --model-size 8b \
+  --output runs/v2/recovery_8b.jsonl \
+  --offline
 ```
 
-Jupyter 会话/GPU 分配到期可能终止进程，浏览器窗口本身不保证任务持续运行。较长训练应遵循学校提供的持久作业方式。
+中断后激活对应环境、设置 `HF_HOME`，重复原命令。OCR 以完整页面、Qwen 以完整行为单位恢复；中断中的页/行重算，不恢复 GPU KV cache。末尾不完整日志被忽略，中间记录损坏明确报错。
 
-## 7. 当前使用预训练模型，不做微调
+Qwen 的 `ok/review` 默认复用，`--retry-review` 可重算 review 行。修改 `RECOVERY_PROMPT.md`、词典或相关参数自动使恢复缓存失效。只改字体/尺寸时仅重跑 render。不要并发写同一路径。
 
-其他训练文档的 Out 不存在，也不会提供。当前正式任务直接使用预训练 OCR2 与 Qwen，完成这 157 对图片的 OCR 与转写，无需准备训练数据或执行 `train.py`。原有依赖真实训练 Out 的 LoRA 方案不纳入当前流程；若以后需要微调，必须按实际可用材料重新设计方案。
+浏览器断开与服务器进程结束不同；GPU 作业/会话过期仍可能终止进程，缓存不保证进程常驻。
+
+当前不要执行旧 `train.py`。这次运行使用预训练模型；小 OCR 微调应根据新输出与已有训练 Blur/可靠转写准备，0/4/14 留出页不用于训练。
