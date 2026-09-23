@@ -1,6 +1,8 @@
 # New, separate deblur-paddle environment. Install the official GPU wheel first:
 # python -m pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 # Direct PaddleX OCR-core avoids optional document/VLM/Transformers backends.
+# Linux native OpenCV runtime: conda install -c conda-forge libgl=1.7
+# See JUPYTER.md for a process-scoped LD_LIBRARY_PATH when starting OCR.
 paddlex[ocr-core]==3.7.0
 numpy==1.26.4
 Pillow==11.3.0

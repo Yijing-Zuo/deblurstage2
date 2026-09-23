@@ -28,7 +28,7 @@ export HF_HOME="$PWD/hf-cache"
 `deblur-paddle` 只创建一次；已创建时从激活开始。
 
 ```bash
-conda create -n deblur-paddle python=3.11 -y &&
+conda create -n deblur-paddle -c conda-forge python=3.11 libgl=1.7 -y &&
 conda activate deblur-paddle &&
 python -m pip install paddlepaddle-gpu==3.2.0 \
   -i https://www.paddlepaddle.org.cn/packages/stable/cu126/ &&
@@ -40,6 +40,15 @@ python ocr_lines.py --download-only
 通过 `paddlex[ocr-core]==3.7.0` 直接调用官方检测/识别器，不安装 PaddleOCR-VL、TensorRT 或新 Transformers。三套模型按固定 SHA 下载至 HF 缓存；`--download-only` 不加载 GPU。
 
 截图驱动 570.211.01 满足官方 cu126 wheel 的驱动下限。无需编译 FlashAttention。已核查官方接口与版本声明，但未在本地进行 H200 真实模型加载。
+
+若已经按旧命令装好环境，运行时出现 `ImportError: libGL.so.1`，补装一次即可，不必重建环境或重新下载权重：
+
+```bash
+conda activate deblur-paddle &&
+conda install -c conda-forge --freeze-installed libgl=1.7 -y
+```
+
+`libgl` 在当前 Conda 环境提供 OpenCV 所需的原生共享库；`pip check` 通过只说明 Python 包依赖声明相容，不证明原生动态库齐全。PaddleX 依赖普通版 `opencv-contrib-python`，保留当前包，不同时叠装 headless 版。下面 OCR 命令临时加入当前环境的库目录，仅影响该进程，切换 Qwen 后不会残留 Paddle 库路径。[libgl 官方配方](https://github.com/conda-forge/libglvnd-feedstock/blob/main/recipe/meta.yaml)、[PaddleX 依赖声明](https://github.com/PaddlePaddle/PaddleX/blob/v3.7.0/setup.py)。
 
 ## 3. 给现有 Qwen 环境补小依赖
 
@@ -56,6 +65,7 @@ python -m pip check
 
 ```bash
 conda activate deblur-paddle &&
+LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 python ocr_lines.py \
   --samples data/docsity/samples.jsonl \
   --output runs/v2/evidence.jsonl \

@@ -48,6 +48,7 @@ Clear 只通过 renderer 独立的 `--clear-references` 清单进入对照图，
 - 字符识别：`PP-OCRv6_medium_rec` 与 `en_PP-OCRv5_mobile_rec`。
 - 局部语言判断：原 `Qwen/Qwen3-VL-32B-Instruct`，可选 8B。
 - OCR 用 Paddle GPU 3.2.0 cu126 + `paddlex[ocr-core]==3.7.0` 静态接口；省去 PaddleOCR 包装层和可选 VLM 后端。
+- 无桌面的 Linux 服务器在 Paddle 环境补装 Conda `libgl`；OCR 启动时临时加入该环境的共享库目录，具体命令见 JUPYTER.md。
 - Qwen 沿用 Torch 2.6.0 cu124 / Transformers 4.57.1；只增加词典和 CPU 排版依赖。
 
 默认模型在 `config.json` 锁定 immutable revision。OCR 的 `--download-only` 只下载三套静态模型必要文件；`--offline` 只读缓存。OCR 和 Qwen 顺序执行，通过文件交接，两个框架不混装到同一环境。
