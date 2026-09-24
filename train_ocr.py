@@ -27,12 +27,15 @@ MODEL_NAME = "PP-OCRv6_medium_rec"
 
 def upstream_directory(path):
     path = Path(path).resolve()
+    # Shared server mounts can report a different owner even for this checkout.
+    # Trust only the explicitly selected directory, for these read-only commands.
+    git = ["git", "-c", f"safe.directory={path.as_posix()}", "-C", str(path)]
     revision = subprocess.check_output(
-        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+        git + ["rev-parse", "HEAD"], text=True).strip()
     if revision != UPSTREAM_REVISION:
         raise ValueError(f"PaddleOCR must be v3.7.0 at {UPSTREAM_REVISION}")
-    subprocess.run(["git", "-C", str(path), "diff", "--exit-code", "HEAD", "--",
-                    "ppocr", "tools", "configs"], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(git + ["diff", "--exit-code", "HEAD", "--", "ppocr", "tools", "configs"],
+                   check=True, stdout=subprocess.DEVNULL)
     return path
 
 

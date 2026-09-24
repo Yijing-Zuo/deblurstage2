@@ -1,7 +1,9 @@
 """CPU checks for training data boundaries, official config and checkpoint reuse."""
 
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -10,7 +12,7 @@ from PIL import Image
 import yaml
 
 from train_ocr import (BASE_CONFIG, DEFAULT_CONFIG, MODEL_NAME, build_config,
-                       checkpoint_prefix, inspect_data, main)
+                       checkpoint_prefix, inspect_data, main, upstream_directory)
 from common import fingerprint
 
 
@@ -37,6 +39,36 @@ class TrainingTests(unittest.TestCase):
             "Optimizer": {"lr": {"name": "Cosine"}}, "Metric": {},
         }
         self.settings = yaml.safe_load(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+
+    def test_shared_mount_owner_check_still_checks_revision_and_changes(self):
+        upstream = self.root / "Paddle OCR"
+        upstream.mkdir()
+        subprocess.run(["git", "init", "-q", str(upstream)], check=True)
+        (upstream / "tools").mkdir()
+        script = upstream / "tools/train.py"
+        script.write_text("# fixture\n", encoding="utf-8")
+        git = ["git", "-C", str(upstream)]
+        subprocess.run(git + ["config", "core.autocrlf", "false"], check=True)
+        subprocess.run(git + ["add", "tools/train.py"], check=True)
+        subprocess.run(git + ["-c", "user.name=OCR test", "-c", "user.email=ocr-test@example.invalid",
+                             "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"], check=True)
+        revision = subprocess.check_output(git + ["rev-parse", "HEAD"], text=True).strip()
+        local_config = (upstream / ".git/config").read_bytes()
+        isolated_global = self.root / "empty-global-config"
+        with patch.dict(os.environ, {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                                     "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(isolated_global)}), patch(
+                "train_ocr.UPSTREAM_REVISION", revision):
+            blocked = subprocess.run(git + ["rev-parse", "HEAD"], capture_output=True, text=True)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("dubious ownership", blocked.stderr)
+            self.assertEqual(upstream_directory(upstream), upstream)
+            with patch("train_ocr.UPSTREAM_REVISION", "0" * 40), self.assertRaisesRegex(ValueError, "must be v3.7.0"):
+                upstream_directory(upstream)
+            script.write_text("# modified training code\n", encoding="utf-8")
+            with self.assertRaises(subprocess.CalledProcessError):
+                upstream_directory(upstream)
+        self.assertEqual((upstream / ".git/config").read_bytes(), local_config)
+        self.assertFalse(isolated_global.exists())
 
     def test_full_labels_and_nrtr_special_tokens_fit(self):
         stats = inspect_data(self.data, self.characters)

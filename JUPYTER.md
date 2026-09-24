@@ -60,6 +60,8 @@ wget -c -O models/PP-OCRv6_medium_rec_pretrained.pdparams \
 
 若 `vendor/PaddleOCR` 已存在，跳过 clone；若下载中断，只重复 wget 行。包装器验证上游提交为 `b03f46425e8ff4442b268ce449e3eef758146cd4`，不使用会漂移的主分支。
 
+共享挂载可能触发 Git 的 `dubious ownership`。新版包装器只对指定的 PaddleOCR 绝对路径在检查命令中临时设置 `safe.directory`，不修改全局配置或文件所有权。若旧版在 `upstream_directory` 报此错误，先更新项目代码，再重复训练命令即可；此时训练尚未开始，不需要 `--resume`，也不用重新下载权重。
+
 ## 4. 正式微调并导出
 
 ```bash
