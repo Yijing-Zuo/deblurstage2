@@ -1,0 +1,8 @@
+# Small overrides for the pinned official PP-OCRv6_medium_rec architecture.
+# train_ocr.py derives label length from complete short-phrase crops.
+epochs: 20
+batch_size: 16
+learning_rate: 0.00001
+warmup_epochs: 1
+workers: 4
+seed: 42

@@ -20,8 +20,16 @@
   "image_max_pixels": 524288,
   "max_new_tokens": 32768,
   "max_seq_length": 131072,
-  "lora": {"rank": 16, "alpha": 32, "dropout": 0.05},
-  "training": {"learning_rate": 0.0001, "epochs": 2, "gradient_accumulation_steps": 16},
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.05
+  },
+  "training": {
+    "learning_rate": 0.0001,
+    "epochs": 2,
+    "gradient_accumulation_steps": 16
+  },
   "v2": {
     "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ",
     "ocr": {
@@ -43,10 +51,54 @@
         }
       ],
       "device": "gpu:0",
-      "detection": {"limit_side_len": 1536, "limit_type": "min", "thresh": 0.2, "box_thresh": 0.4, "unclip_ratio": 1.5},
+      "detection": {
+        "limit_side_len": 1536,
+        "limit_type": "min",
+        "thresh": 0.2,
+        "box_thresh": 0.4,
+        "unclip_ratio": 1.5
+      },
       "crop_padding": 1
     },
-    "candidates": {"beam_width": 8, "beam_top_k": 4, "max_candidates": 6, "lexicon_max_edit": 3},
-    "recovery": {"image_max_pixels": 786432, "image_scale": 2, "max_new_tokens": 32768, "max_seq_length": 131072, "context_lines": 2, "proposal_max_growth": 24}
+    "candidates": {
+      "beam_width": 8,
+      "beam_top_k": 4,
+      "max_candidates": 6,
+      "lexicon_max_edit": 3
+    },
+    "recovery": {
+      "image_max_pixels": 786432,
+      "image_scale": 2,
+      "max_new_tokens": 32768,
+      "max_seq_length": 131072,
+      "context_lines": 2,
+      "proposal_max_growth": 24
+    }
+  },
+  "v3": {
+    "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ ",
+    "ocr": {
+      "detector": {
+        "name": "PP-OCRv6_medium_det",
+        "repo": "PaddlePaddle/PP-OCRv6_medium_det",
+        "revision": "8e0f56fb2ef86b461d99cfc7ac5c137738985f61"
+      },
+      "recognizers": [
+        {
+          "name": "PP-OCRv6_medium_rec",
+          "repo": "PaddlePaddle/PP-OCRv6_medium_rec",
+          "revision": "e5a92bcbc5cc1b494628e458d267778f0704fd7c"
+        }
+      ],
+      "device": "gpu:0",
+      "detection": {
+        "limit_side_len": 1536,
+        "limit_type": "min",
+        "thresh": 0.2,
+        "box_thresh": 0.4,
+        "unclip_ratio": 1.5
+      },
+      "crop_padding": 1
+    }
   }
 }

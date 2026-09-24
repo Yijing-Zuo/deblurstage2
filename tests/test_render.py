@@ -157,6 +157,88 @@ class RenderTests(unittest.TestCase):
             self.assertRegex(filename(name), r"^sample-[0-9a-f]{16}$")
         self.assertEqual(filename("4_004"), "4_004")
 
+    def direct_ocr(self, blur=None, role="evaluation"):
+        sample = {key: value for key, value in self.sample.items() if key != "blur"}
+        sample["stage2_split"] = role
+        if blur:
+            sample["blur"] = blur
+        write_jsonl(self.sample_path, [sample])
+        self.record.update(schema_version=3, stage="ocr", stage2_split=role,
+                           source_hashes={"out": self.record["source_hashes"]["out"]})
+
+    def test_direct_ocr_needs_only_out_and_labels_training_role(self):
+        self.direct_ocr(blur="missing-blur.png", role="train")
+        report = self.run_render()
+        self.assertEqual(report["schema_version"], 3)
+        self.assertEqual(report["samples"][0]["stage2_split"], "train")
+        with fitz.open(self.root / "render/comparison.pdf") as document:
+            text = document[0].get_text()
+            self.assertIn("stage2: train", text)
+            self.assertIn("Blur not supplied", text)
+            self.assertIn(self.record["lines"][0]["text"], text)
+
+    def test_direct_ocr_resolves_optional_blur_for_comparison(self):
+        self.direct_ocr(blur="blur.png")
+        self.run_render()
+        with fitz.open(self.root / "render/comparison.pdf") as document:
+            self.assertNotIn("Blur not supplied", document[0].get_text())
+
+    def test_failed_direct_ocr_can_be_rendered_as_explicit_diagnostic(self):
+        self.direct_ocr()
+        self.record.update(status="error", error="ValueError: No lines detected", lines=[])
+        report = self.run_render(allow_incomplete=True)
+        self.assertEqual(report["samples"][0]["status"], "error")
+        with fitz.open(self.root / "render/comparison.pdf") as document:
+            self.assertIn("No recovered lines", document[0].get_text())
+
+    def test_direct_ocr_rejects_role_and_source_mismatch(self):
+        self.direct_ocr()
+        self.record["stage2_split"] = "train"
+        with self.assertRaisesRegex(ValueError, "Stage2 split"):
+            self.run_render()
+        self.record["stage2_split"] = "evaluation"
+        self.record["source_hashes"]["out"] = "wrong"
+        with self.assertRaisesRegex(ValueError, "source sample"):
+            self.run_render()
+
+    def test_render_document_filter_keeps_selected_manifest_complete(self):
+        self.direct_ocr()
+        samples = [{**self.sample, "stage2_split": "evaluation"},
+                   {**self.sample, "id": "14_001", "document_id": "14", "stage2_split": "train"}]
+        write_jsonl(self.sample_path, samples)
+        references = self.root / "clear.jsonl"
+        write_jsonl(references, [{"id": sample["id"], "clear": "clear.png"} for sample in samples])
+        report = self.run_render(documents=["4"], clear_path=references)
+        self.assertEqual([item["id"] for item in report["samples"]], ["4_004"])
+        with self.assertRaisesRegex(ValueError, "missing sample ids"):
+            self.run_render()
+
+    def test_tiny_labels_expand_in_place_without_extra_pages_or_lost_text(self):
+        self.record["lines"] = [
+            {**self.line("zero", 0, 10, "0"), "box": [30, 10, 35, 12]},
+            {**self.line("word", 1, 60, "'the"), "box": [50, 60, 57, 64]},
+            {**self.line("edge", 2, 765, "M"), "box": [505, 765, 509, 768]},
+        ]
+        report = self.run_render()
+        item = report["samples"][0]
+        self.assertEqual(item["overflow_pages"], [])
+        self.assertTrue(all(line["adjustment"] == "minimum_readable_box" for line in item["layout"]))
+        with fitz.open(self.root / "render/recovered.pdf") as document:
+            self.assertEqual(len(document), 1)
+            self.assertEqual(document[0].get_text().splitlines(), ["0", "'the", "M"])
+            for line in item["layout"]:
+                self.assertTrue(document[0].rect.contains(fitz.Rect(line["placed_box"])))
+
+    def test_expansion_that_would_cover_another_line_uses_visible_overflow(self):
+        self.record["lines"] = [
+            {**self.line("previous", 0, 0, "Keep above clear."), "box": [20, 0, 480, 20]},
+            {**self.line("tiny", 1, 20, "M"), "box": [30, 20, 33, 22]},
+            self.line("next", 2, 22, "Keep below clear."),
+        ]
+        report = self.run_render()
+        self.assertEqual(report["samples"][0]["overflow"][0]["text"], "M")
+        self.assertTrue(report["samples"][0]["overflow_pages"])
+
 
 if __name__ == "__main__":
     unittest.main()

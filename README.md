@@ -1,87 +1,53 @@
 # deblurstage2
 
-从配准的 Blur/Out 恢复英文文字，输出 512×768 白底页面、可复制文字 PDF，以及同一样本的 Clear / Output / Blur / Recovered 四列对照。
-
-**当前入口：`ocr_lines.py` → `recover.py` → `render.py`。云端完整命令见 [JUPYTER.md](JUPYTER.md)。** 使用已有 H200、`deblur-qwen`、Qwen 32B 缓存和 157 对图片；新增独立 Paddle 环境。程序在服务器本地运行公开权重，不调用收费推理 API。
+读取 deblur 的 **Out**，针对它的字形失真微调 PaddleOCR，输出英文文字、512×768 白底页面和可复制文字 PDF。当前默认是 v3，运行命令见 [JUPYTER.md](JUPYTER.md)。
 
 ```text
-Blur + Out
-  → 双图行检测、共用裁剪、分栏阅读顺序
-  → PP-OCRv6 medium + v5 英文识别器：保存字符概率
-  → 英文字符约束、CTC 候选、字符组混淆与词典召回
-  → Qwen 局部选择 / 短词提议 → 缓存概率再评分
-  → 按行装配 → 白底 PNG / 可复制 PDF / 对照 PDF
+训练：doc4 Out + 对齐的 PDF 原文 → 短词组裁剪 → 官方 PaddleOCR 识别器微调
+推理：Out → 行检测 / 几何整理 → 微调识别器 → 英文字符解码 → PNG / PDF
 ```
 
-Qwen 可切换 8B/32B；默认复用已下载的 32B。它不再自由续写整页。允许保留 gibberish，允许提出原 OCR 中没有的新词；每次改动记录原读法、候选与各视觉来源的支持。正文限制为 A–Z/a–z、0–9、ASCII 标点与空格，行之间由程序换行。数字不作全局 `1→l`、`0→O` 替换。
+主流程不加载 Qwen、DeepSeek 或 Torch。复用现有 `deblur-paddle`、检测模型、HF 缓存和 Out 图片；训练调用官方 PaddleOCR v3.7.0 脚本及独立的 `.pdparams` 预训练权重。训练环境单独建立，避免训练依赖与 PaddleX 的 OpenCV 包互相覆盖。
 
-## 输入与输出
+## 本次数据划分
 
-现有 `data/docsity/samples.jsonl` 直接使用，不重新上传、不重新跑 base deblur。每行包含：
+| 用途 | 数据 | 已准备的样本 |
+| --- | --- | --- |
+| stage2 训练 | 4 号前 59 个可用页面 | 4,807 个短词组 |
+| stage2 验证、选择权重 | 4 号最后 15 个可用页面 | 1,220 个短词组 |
+| 跨文档诊断 | 14 号的 83 个 Out 区域 | 不进入训练与选权重 |
 
-```json
-{"id":"4_004","document_id":"4","deblur_run":"docsity_20260915","split":"test","blur":"images/Blur_4_004.png","out":"images/Out_4_004.png"}
-```
+原 `split=test` 表示 stage1 deblur 的划分，保持不变；新的 `stage2_split` 单独标记用途。4 号已参与 stage2 训练，不能再称为 stage2 独立测试。14 号是当前跨文档检查；历史中已查看过它的结果，不宣称为从未接触过的盲测集。
 
-图片路径相对 manifest 所在目录，两图必须配准、尺寸一致。512×768 是已有区域尺寸，不保证等于原 PDF 全页。当前 4/14 共 157 对；0 号缺块未拼补混入。其他训练文档的 Out 不存在，运行不依赖它们。
+6,027 个标签来自已有匹配 PDF 的文字层，经过配准映射到 Out 坐标，未使用 OCR/Qwen 输出作为监督。检查 PDF、Clear、Out 哈希，排除裁到一半的词和水印。标签是 `geometry_checked`，不冒充逐词人工校对。8 个带重音的词被明确排除；标点、连字的归一化保留审计记录。
 
-| 文件 | 内容 |
-| --- | --- |
-| `runs/v2/evidence.jsonl` | 行位置、阅读顺序、模型身份和缓存索引 |
-| `runs/v2/evidence.assets/` | 同坐标行裁剪，以及保留原概率的压缩 NPZ |
-| `runs/v2/recovery.lines.jsonl` | 每行候选、CTC 分数、Qwen 回复、选择及中断恢复日志 |
-| `runs/v2/recovery.jsonl` | 最终按页组织的文字和坐标 |
-| `runs/v2/render/recovered/*.png` | 512×768 白底文字页 |
-| `runs/v2/render/recovered.pdf` | 可选择和复制文字的 PDF |
-| `runs/v2/render/comparison.pdf` | 有 Clear 参考时四列；没有时为明确标注的三列 |
-| `runs/v2/render/report.json` | 排版、溢出、覆盖诊断和各页状态 |
+官方识别器训练时只有 40 个 CTC 时间步，因此按完整单词边界组成短语，检查字符数及重复字符的额外时间步需求。**不截断标签。** 推理仍在完整 Out 页面上检测行，并使用动态行宽。训练裁剪允许用 doc4 Clear/PDF 定位；推理只读取 Out。Clear 和 Blur 仅可另传给 renderer 制作对照。
 
-Clear 只通过 renderer 独立的 `--clear-references` 清单进入对照图，不进入 OCR、Qwen 或词候选。格式为 `{"id":"4_004","clear":"images/Clear_4_004.png"}`，路径相对该清单；必须和当前样本 ID、尺寸对应。不要输入旧 2 号的三列比较 PDF 代替当前 4/14 数据。
-
-`ok` 表示步骤完成且结构合法，**不表示识别正确**。`review` 保留有效文字，记录被拒绝的提议、可疑行几何或覆盖缺口。`error` 保留错误原因并在下次运行时重试。默认不把缺行/错误结果排版成完整成品；需要诊断图时才使用 `render.py --allow-incomplete`。
-
-字号根据行框自适应；文字确实放不下时不裁尾，而是标记位置并将全文放在额外白底页，详情写入 report。
-
-## 模型与环境
-
-- 检测：`PP-OCRv6_medium_det`。
-- 字符识别：`PP-OCRv6_medium_rec` 与 `en_PP-OCRv5_mobile_rec`。
-- 局部语言判断：原 `Qwen/Qwen3-VL-32B-Instruct`，可选 8B。
-- OCR 用 Paddle GPU 3.2.0 cu126 + `paddlex[ocr-core]==3.7.0` 静态接口；省去 PaddleOCR 包装层和可选 VLM 后端。
-- 无桌面的 Linux 服务器在 Paddle 环境补装 Conda `libgl`；OCR 启动时临时加入该环境的共享库目录，具体命令见 JUPYTER.md。
-- Qwen 沿用 Torch 2.6.0 cu124 / Transformers 4.57.1；只增加词典和 CPU 排版依赖。
-
-默认模型在 `config.json` 锁定 immutable revision。OCR 的 `--download-only` 只下载三套静态模型必要文件；`--offline` 只读缓存。OCR 和 Qwen 顺序执行，通过文件交接，两个框架不混装到同一环境。
-
-## 代码与可调设置
+## 入口
 
 | 文件 | 职责 |
 | --- | --- |
-| `ocr_lines.py` | 检测、行几何、共同裁剪与阶段缓存 |
-| `paddle_ctc.py` | 锁版本的 PaddleX 概率提取适配 |
-| `ctc.py` | 受限解码、完整 CTC 路径求和 |
-| `candidates.py` | 字符组编辑、词表召回、拆合词和区间装配 |
-| `recover.py` | 已有 Qwen 的局部候选选择与短提议 |
-| `render.py` | 字体排版、PNG/PDF 和同样本对照 |
+| `export_ocr_labels.py` | 从本地已验证 PDF/Clear 几何导出 doc4 标签；服务器使用提供的标签包即可 |
+| `prepare_ocr.py` | 校验标签与 Out，按原页面划分训练/验证，生成裁剪和 stage2 清单 |
+| `train_ocr.py` | 薄封装：调用固定版本官方训练、完整检查点续训、静态模型导出 |
+| `ocr_lines.py` | Out 行检测、整理、字符概率与文本输出；`--model-dir` 切换微调权重 |
+| `render.py` | 白底 PNG、可复制 PDF、Clear / Out / Blur / Recovered 四列对照 |
 
-`config.json` 的 `v2` 段控制检测、字符范围、候选搜索、Qwen 图像与输出预算。`RECOVERY_PROMPT.md` 可直接编辑；`--lexicon` 可换成自备 `word count` 英文词典。允许保留词表外名称，不会把最高频近邻直接当答案。
+`configs/ocr_out.yml` 默认 20 epochs、batch 16、学习率 `1e-5`；只训练识别器，检测器保持原权重。保留官方字典和模型结构，以复用预训练权重。推理输出限制为 A–Z/a–z、0–9、ASCII 标点和空格；不做全局 `1/l`、`0/O` 替换，不强行把乱码改成词典中的词。
 
-字符概率是识别器的视觉支持，不是恢复正确率；CTC 时间步也不是精确字母框。保持动态行宽，不强制压成 320 像素。几何使用共享轴对齐裁剪，保留原检测多边形，未实现任意旋转/复杂弯曲文本的自动校正。
+## 输出与复用
 
-## 缓存与复核
+`ocr_lines.py` 输出 JSONL，同时在相邻 `.assets/` 目录保留行裁剪和原始字符概率。renderer 直接读取该 JSONL；`ok` 只表示步骤完成，不代表文字正确。空行、可疑几何、覆盖缺口标记为 `review`；真正失败为 `error`。
 
-同一命令重新执行即可：OCR 复用完整且哈希匹配的页面，Qwen 复用完整的行，失败/变化部分重算。丢失或被修改的图像/NPZ 会拒绝恢复，先重跑 OCR 重建该页。不要让两个作业同时写同一输出路径。
+- 同一推理命令重跑，复用完整且哈希匹配的页面；失败或变化页面重算。
+- `--detections runs/v2/evidence.jsonl` 可复用相同 Out、检测器和参数的旧检测框。新裁剪与新权重必须重新识别，旧 NPZ 不会冒充微调结果。
+- 训练中断使用 `--resume latest`，同时要求模型、优化器和训练状态文件；恢复到最近保存的检查点。
+- 只改排版，只重跑 `render.py`。不要同时向同一输出文件写入。
 
-改 Qwen 提示或词典不重跑 OCR；只改排版不重跑模型。改变字符范围需要重新生成 OCR 证据。旧 DeepSeek 字符串和旧 Qwen JSONL 无法转为字符概率，不作为 v2 缓存。
+renderer 生成 `recovered/*.png`、`recovered.pdf`、`comparison.pdf` 和 `report.json`。默认保留源坐标；文字放不下会记录扩展或追加页，不静默裁字。`--allow-incomplete` 明确允许把缺失结果绘成诊断图。
 
-本地 CPU 检查：
+旧 Qwen/DeepSeek 代码保留用于历史复现，退出默认入口。v2 需要显式 `ocr_lines.py --pipeline v2`，历史命令见 [JUPYTER_V2.md](JUPYTER_V2.md)。不要对当前数据执行旧 `train.py`。
 
-```bash
-python -m unittest discover -s tests -v
-```
+本地校验使用 `python -m unittest discover -s tests -v`，覆盖标签映射、划分、CTC、训练/导出调用、缓存和 PDF。CPU 校验不等于 H200 真实训练，也不证明微调效果已提高。真实图片、标签、权重和实验结果不提交到 Git。
 
-覆盖 CTC 与枚举路径对照、概率/字典、数字和字符限制、候选边界、分栏几何、文件完整性、中断日志、模拟模型的跨阶段合同，以及 PDF 文字和 PNG 一致性。未执行模型 smoke test；本地复核不等于在 H200 实测新模型，也不证明恢复效果已改善。
-
-`ocr.py`、`restore.py`、`restore_local.py` 保留作历史复现，已退出默认流程。`train.py` 的旧 LoRA 数据设计需要训练 Out，不适用于当前材料。未来 OCR 微调应使用已有训练文档的 Blur/可靠行转写和上游训练循环，保持 0/4/14 留出；当前三步运行都是推理。
-
-设计与限制见 [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md)。Git 不包含真实文档图片、模型、运行结果或凭据。
+上游依据：[固定版识别配置](https://github.com/PaddlePaddle/PaddleOCR/blob/v3.7.0/configs/rec/PP-OCRv6/PP-OCRv6_medium_rec.yml)、[官方微调文档](https://github.com/PaddlePaddle/PaddleOCR/blob/v3.7.0/docs/version2.x/ppocr/model_train/finetune.en.md)。

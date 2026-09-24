@@ -85,8 +85,8 @@ def hash_file(path):
     return digest.hexdigest()
 
 
-def source_hashes(row):
-    return {view: hash_file(row[view]) for view in ("blur", "out")}
+def source_hashes(row, views=("blur", "out")):
+    return {view: hash_file(row[view]) for view in views}
 
 
 def load_config(path="config.json"):
@@ -107,11 +107,13 @@ def model_settings(config, size=None, path=None):
     return settings
 
 
-def load_samples(path):
+def load_samples(path, views=("blur", "out")):
     path = Path(path).resolve()
+    if not views or set(views) - {"blur", "out"}:
+        raise ValueError("Sample views must be blur and/or out")
     rows, seen, documents = read_jsonl(path), set(), {}
     for row in rows:
-        for field in ("id", "document_id", "deblur_run", "split", "blur", "out"):
+        for field in ("id", "document_id", "deblur_run", "split", *views):
             if row.get(field) is None or str(row[field]).strip() == "":
                 raise ValueError(f"Sample requires {field}: {row.get('id')}")
         if row["id"] in seen:
@@ -128,10 +130,14 @@ def load_samples(path):
         if doc in documents and documents[doc] != split:
             raise ValueError(f"Document {doc} occurs in multiple splits")
         documents[doc] = split
+        if row.get("stage2_split") not in {None, "train", "validation", "evaluation", "unassigned"}:
+            raise ValueError(f"Unknown stage2 split: {row.get('stage2_split')}")
         for view in ("blur", "out"):
+            if not row.get(view):
+                continue
             image = Path(row[view])
             image = (path.parent / image).resolve() if not image.is_absolute() else image
-            if not image.is_file():
+            if view in views and not image.is_file():
                 raise FileNotFoundError(image)
             row[view] = str(image)
     return rows

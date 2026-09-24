@@ -1,4 +1,4 @@
-"""Render selected v2 lines as white pages and copyable comparison PDFs (CPU)."""
+"""Render direct OCR or v2 recovery as white pages and copyable comparison PDFs."""
 
 import argparse
 import io
@@ -10,7 +10,7 @@ from pathlib import Path
 import fitz
 from PIL import Image
 
-from common import fingerprint, load_samples, read_jsonl, source_hashes
+from common import fingerprint, hash_file, load_samples, read_jsonl
 
 
 def body_text(value):
@@ -81,6 +81,27 @@ def fit_line(font, text, rect, minimum=6):
     return (size, scale) if scale >= 0.8 else None
 
 
+def placement(font, text, rect, page_size, other_boxes):
+    """Give tiny labels a bounded readable box, without covering another line."""
+    fitting = fit_line(font, text, rect)
+    if fitting:
+        return rect, fitting
+    width = max(rect.width, font.text_length(text, fontsize=6) + 0.1)
+    height = max(rect.height, 6 * (font.ascender - font.descender) + 0.1)
+    if width > rect.width + 24 or height > rect.height + 12:
+        return rect, None
+    if width > page_size[0] or height > page_size[1]:
+        return rect, None
+    for left in (rect.x0, rect.x1 - width):
+        for top in (rect.y0, rect.y1 - height):
+            x = max(0, min(left, page_size[0] - width))
+            y = max(0, min(top, page_size[1] - height))
+            expanded = fitz.Rect(x, y, x + width, y + height)
+            if all((expanded & box).get_area() <= (rect & box).get_area() + 0.01 for box in other_boxes):
+                return expanded, fit_line(font, text, expanded)
+    return rect, None
+
+
 def put_line(page, font, font_path, text, rect, fitting):
     size, scale = fitting
     page.insert_font(fontname="body" if font_path else "helv", fontfile=font_path)
@@ -134,23 +155,30 @@ def render_record(document, record, font, font_path, page_size):
     primary = page.number
     report = {"id": record["id"], "status": record["status"], "page": primary + 1,
               "overflow": [], "missing_lines": [], "review_lines": [], "layout": [],
+              "stage2_split": record.get("stage2_split", "unassigned"),
               "flags": record.get("flags", []), "coverage": record.get("coverage", {})}
     lines = ordered_lines(record)
+    boxes = [line_rect(line["box"], record["page_size"], page_size) for line in lines]
     if not lines:
         page.insert_text((24, 40), "No recovered lines. See recovery.jsonl.", fontsize=12)
         report["status"] = "error"
-    for line in lines:
-        rect = line_rect(line["box"], record["page_size"], page_size)
+    for index, line in enumerate(lines):
+        rect = boxes[index]
         text = body_text(line.get("text", ""))
         if line.get("status") == "review":
             report["review_lines"].append(line["line_id"])
         if not text.strip() or line.get("status") == "error":
             report["missing_lines"].append(line["line_id"])
             text = text or "[unrecovered]"
-        fitting = fit_line(font, text, rect)
+        placed, fitting = placement(font, text, rect, page_size, boxes[:index] + boxes[index + 1:])
         if fitting:
-            put_line(page, font, font_path, text, rect, fitting)
-            report["layout"].append({"line_id": line["line_id"], "font_size": fitting[0], "horizontal_scale": fitting[1]})
+            put_line(page, font, font_path, text, placed, fitting)
+            layout = {"line_id": line["line_id"], "font_size": fitting[0], "horizontal_scale": fitting[1]}
+            if placed != rect:
+                layout.update({"adjustment": "minimum_readable_box", "original_box": list(rect), "placed_box": list(placed)})
+                # Later tiny labels must also respect the already expanded box.
+                boxes[index] = placed
+            report["layout"].append(layout)
         else:
             report["overflow"].append({"line_id": line["line_id"], "text": text})
             # An explicit mark replaces a line only when its entire text is appended.
@@ -166,10 +194,12 @@ def render_record(document, record, font, font_path, page_size):
 
 
 def compare_page(comparison, recovered, primary, sample, clear, report, page_size):
-    panels = ([("Clear", clear)] if clear else []) + [("Output", sample["out"]), ("Blur", sample["blur"]), ("Recovered", None)]
+    panels = ([("Clear", clear)] if clear else []) + [("Output", sample["out"]), ("Blur", sample.get("blur")), ("Recovered", None)]
     width, height = page_size
     page = comparison.new_page(width=24 + len(panels) * (width + 12), height=height + 64)
     summary = f"{filename(sample['id'])} | {report['status']}"
+    if report["stage2_split"] != "unassigned":
+        summary += f" | stage2: {report['stage2_split']}"
     if report["status"] != "ok" and report["flags"]:
         summary += " | " + ", ".join(report["flags"])
     page.insert_text((12, 13), summary, fontsize=9)
@@ -182,43 +212,70 @@ def compare_page(comparison, recovered, primary, sample, clear, report, page_siz
                 buffer = io.BytesIO()
                 image.convert("RGB").save(buffer, format="PNG")
             page.insert_image(rect, stream=buffer.getvalue())
-        else:
+        elif label == "Recovered":
             page.show_pdf_page(rect, recovered, primary)
+        else:
+            page.insert_text((x + 16, 65), "Blur not supplied (Out-only OCR)", fontsize=12)
     if report["overflow"]:
         page.insert_text((12, height + 56), "Full overflow text is on additional pages in recovered.pdf.", fontsize=9)
     elif not clear:
         page.insert_text((12, height + 56), "No matching Clear reference supplied: three-column comparison.", fontsize=9)
 
 
-def render(samples_path, recovery_path, output, clear_path=None, font_path=None, page_size=(512, 768), allow_incomplete=False):
+def render(samples_path, recovery_path, output, clear_path=None, font_path=None, page_size=(512, 768), allow_incomplete=False, documents=None):
     if min(page_size) < 128:
         raise ValueError("Render dimensions must be at least 128 pixels")
-    samples = load_samples(samples_path)
+    rows = read_jsonl(recovery_path)
+    direct_ocr = bool(rows) and all(row.get("schema_version") == 3 and row.get("stage") == "ocr" for row in rows)
+    views = ("out",) if direct_ocr else ("blur", "out")
+    samples = load_samples(samples_path, views=views)
+    manifest_ids = {sample["id"] for sample in samples}
+    if documents:
+        documents = {str(doc) for doc in documents}
+        samples = [sample for sample in samples if sample["document_id"] in documents]
+        rows = [row for row in rows if str(row.get("document_id")) in documents]
+        if documents != {sample["document_id"] for sample in samples}:
+            raise ValueError("Requested render document is missing from the sample manifest")
     if not samples:
         raise ValueError("Sample manifest is empty")
     ids = {sample["id"] for sample in samples}
     records = {}
-    for row in read_jsonl(recovery_path):
+    for row in rows:
         if row.get("id") not in ids or row["id"] in records:
             raise ValueError(f"Unknown or duplicate recovery id: {row.get('id')}")
-        if row.get("schema_version") != 2 or row.get("stage") != "recovery" or row.get("status") not in {"ok", "review", "error"}:
-            raise ValueError(f"Not a v2 recovery record: {row.get('id')}")
+        valid_stage = (row.get("schema_version"), row.get("stage")) in {(2, "recovery"), (3, "ocr")}
+        if not valid_stage or row.get("status") not in {"ok", "review", "error"}:
+            raise ValueError(f"Not a v2 recovery or v3 OCR record: {row.get('id')}")
+        if (row.get("stage") == "ocr") != direct_ocr:
+            raise ValueError("Do not mix v2 recovery and v3 OCR records")
         records[row["id"]] = row
     if ids != set(records):
         raise ValueError(f"Recovery missing sample ids: {sorted(ids - set(records))}")
-    references = clear_references(clear_path, ids)
+    references = {key: value for key, value in clear_references(clear_path, manifest_ids).items() if key in ids}
     if font_path:
         font_path = str(Path(font_path).resolve(strict=True))
     font = fitz.Font(fontfile=font_path) if font_path else fitz.Font("helv")
     # Validate every page before writing any artifacts, including reference alignment.
     for sample in samples:
         row = records[sample["id"]]
+        if direct_ocr:
+            role = row.get("stage2_split", "unassigned")
+            if role not in {"train", "validation", "evaluation", "unassigned"} or role != sample.get("stage2_split", "unassigned"):
+                raise ValueError(f"Stage2 split does not match the source sample: {sample['id']}")
+            # Blur is an optional comparison image, never a v3 inference dependency.
+            blur = sample.pop("blur", None)
+            if blur:
+                blur = Path(blur)
+                blur = blur if blur.is_absolute() else Path(samples_path).resolve().parent / blur
+                if blur.is_file():
+                    sample["blur"] = str(blur)
         if not allow_incomplete and (row["status"] == "error" or not row.get("lines") or any(
                 line.get("status") == "error" or not line.get("text", "").strip() for line in row.get("lines", []))):
             raise ValueError(f"Incomplete recovery for {sample['id']}; fix that record or explicitly use --allow-incomplete")
-        if row.get("source_hashes") != source_hashes(sample) or str(row.get("document_id")) != sample["document_id"]:
+        hashes = {view: hash_file(sample[view]) for view in views}
+        if row.get("source_hashes") != hashes or str(row.get("document_id")) != sample["document_id"]:
             raise ValueError(f"Recovery does not match the source sample: {sample['id']}")
-        for path in [sample["blur"], sample["out"], *([references[sample["id"]]] if sample["id"] in references else [])]:
+        for path in [sample[view] for view in ("out", "blur") if view in sample] + ([references[sample["id"]]] if sample["id"] in references else []):
             with Image.open(path) as image:
                 if list(image.size) != row.get("page_size"):
                     raise ValueError(f"Page size mismatch: {sample['id']} / {path}")
@@ -253,7 +310,8 @@ def render(samples_path, recovery_path, output, clear_path=None, font_path=None,
             compare_page(comparison, recovered, report["page"] - 1, sample,
                          references.get(sample["id"]), report, page_size)
         comparison.save(output / "comparison.pdf", garbage=4, deflate=True)
-    report = {"schema_version": 2, "page_size": list(page_size), "font": font_path or "Helvetica", "samples": reports}
+    report = {"schema_version": 3 if direct_ocr else 2, "source_stage": "ocr" if direct_ocr else "recovery",
+              "page_size": list(page_size), "font": font_path or "Helvetica", "samples": reports}
     (output / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return report
 
@@ -261,7 +319,8 @@ def render(samples_path, recovery_path, output, clear_path=None, font_path=None,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", required=True)
-    parser.add_argument("--recovery", required=True)
+    parser.add_argument("--predictions", "--recovery", dest="recovery", required=True)
+    parser.add_argument("--documents", nargs="+", help="Render only these document IDs; require all their samples")
     parser.add_argument("--output", required=True)
     parser.add_argument("--clear-references")
     parser.add_argument("--font")
@@ -270,7 +329,7 @@ def main(argv=None):
     parser.add_argument("--page-height", type=int, default=768)
     args = parser.parse_args(argv)
     report = render(args.samples, args.recovery, args.output, args.clear_references, args.font,
-                    (args.page_width, args.page_height), args.allow_incomplete)
+                    (args.page_width, args.page_height), args.allow_incomplete, args.documents)
     reviews = sum(row["status"] != "ok" for row in report["samples"])
     print(f"Rendered {len(report['samples'])} samples; {reviews} require review. See {args.output}/report.json")
     return 0
